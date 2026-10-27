@@ -1,0 +1,9 @@
+# 编译产物
+build/
+
+# macOS
+.DS_Store
+
+# Xcode / Swift
+*.xcuserstate
+.swiftpm/
