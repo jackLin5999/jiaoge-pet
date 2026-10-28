@@ -1990,6 +1990,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func greetByTime() {
+        // 还没配置模型：多半是刚装好，先告诉他去哪儿找我
+        if !config.configured {
+            speak("第一次用？点菜单栏的 🍌 设置一下", subtitle: "我住在右上角", duration: 5, maxWidth: 280)
+            return
+        }
         let h = hourNow()
         if h >= 5 && h < 11 {
             speak("早上好！今天也一起加油", subtitle: "🌤 早上好", duration: 3)

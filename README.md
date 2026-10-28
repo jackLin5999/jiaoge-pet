@@ -76,7 +76,10 @@ xattr -dr com.apple.quarantine /Applications/JiaoGe.app
 
 ### 遇到问题
 
-先跑一次自检，把输出贴到 [Issues](https://github.com/jackLin5999/jiaoge-pet/issues)：
+常见情况：打不开、打开后什么都没出现、截图是黑的、翻译报错、快捷键失灵——都写在
+[INSTALL.md 的常见问题](INSTALL.md#常见问题) 里了。
+
+还解决不了，跑一次自检把输出贴到 [Issues](https://github.com/jackLin5999/jiaoge-pet/issues)：
 
 ```bash
 /Applications/JiaoGe.app/Contents/MacOS/JiaoGe --self-test
