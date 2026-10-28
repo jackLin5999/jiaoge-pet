@@ -6,14 +6,14 @@ import Vision
 
 struct ChatConfig: Codable {
     var baseURL = "https://api.deepseek.com/v1"
-    var model = "deepseek-chat"
+    var model = "deepseek-flash"
     var apiKey = ""
     /// 模型能不能看图：能的话截图翻译直接发图，不走 OCR
     var vision = false
     /// 翻译目标语言；空字符串表示「自动」＝原文是中文就翻英文，否则翻中文
     var targetLanguage = ""
 
-    init(baseURL: String = "https://api.deepseek.com/v1", model: String = "deepseek-chat",
+    init(baseURL: String = "https://api.deepseek.com/v1", model: String = "deepseek-flash",
          apiKey: String = "", vision: Bool = false, targetLanguage: String = "") {
         self.baseURL = baseURL
         self.model = model
@@ -26,7 +26,7 @@ struct ChatConfig: Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? "https://api.deepseek.com/v1"
-        model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-chat"
+        model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
         vision = try c.decodeIfPresent(Bool.self, forKey: .vision) ?? false
         targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage) ?? ""
@@ -317,8 +317,7 @@ final class SettingsWindow: NSPanel {
                                   "法文", "德文", "西班牙文", "俄文"]
 
     static let presets: [(String, String, String)] = [
-        ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
-        ("DeepSeek（视觉）", "https://api.deepseek.com/v1", "deepseek-flash"),
+        ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-flash"),
         ("通义千问", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus"),
         ("Kimi（月之暗面）", "https://api.moonshot.cn/v1", "moonshot-v1-8k"),
         ("智谱 GLM", "https://open.bigmodel.cn/api/paas/v4", "glm-4-flash"),

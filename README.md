@@ -36,7 +36,7 @@ Esc 收起（右键宠物留给剪贴板了）。
 
 | 服务 | API 地址 | 模型示例 |
 |---|---|---|
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-flash`（支持看图） |
 | 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
 | Kimi | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
 | 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash` |
@@ -47,7 +47,7 @@ Esc 收起（右键宠物留给剪贴板了）。
 其他兼容 OpenAI 格式的服务选「自定义」填就行。配置和 Key 存在
 `~/Library/Application Support/JiaoGe/config.json`，文件权限 600，只有本机这个账号能读。
 
-聊天记录只保存在内存里，重启就没了；最近的 12 条会作为上下文一起发出去。
+聊天记录会存到本地（最近 50 条），重启后接着聊；每次请求会带上最近的 12 条作为上下文。
 
 ## 截图识字 / 截图翻译
 
@@ -207,14 +207,14 @@ Vision 对"指定语言列表"非常敏感——列表里混入中文，韩文�
 - `Banana.body` / `stem` / `leftArm` / `rightArm` / `feet` / `spots`：各部件轮廓
 - `rgb(...)`：配色全部取自参考图，**按 Display P3 标注**——参考图就是 P3 色彩空间，
   写成 sRGB 会明显偏淡
-- `PetController.lines`：点击时随机说的台词
+- `PetController.lines` / `stemLines` / `eyeLines` …：各部位随机说的台词
 - `makePose()`：所有动画曲线（呼吸、眨眼、跳、挥手、压扁、拖拽），想加动作在这里加
 - `hitAreaContains`：可点击区域（现在是身体、果柄、手臂、脚各放宽一圈）
 
 ## 发布到 GitHub
 
 ```bash
-./release.sh      # 产出 build/JiaoGe-0.1.0.zip
+./release.sh      # 产出 build/JiaoGe-1.0.0.zip
 ```
 
 两种分发方式，建议一起提供：
@@ -252,8 +252,11 @@ Vision 对"指定语言列表"非常敏感——列表里混入中文，韩文�
 ## 说明
 
 - 用 Command Line Tools 的 `swiftc` 直接编译，不需要装 Xcode
-- 本机 ad-hoc 签名，只适合自己用；要分发给别人需要正式签名和公证
-- API Key 没有放进钥匙串：这个 app 是 ad-hoc 签名的，每次重新编译签名都会变，
-  钥匙串会反复弹授权框。所以改存 `~/Library/Application Support/JiaoGe/config.json`，
-  文件权限 600，只有本机这个账号能读
+- 签名：`build.sh` 会优先用钥匙串里的 `JiaoGe Local Signing` 自签名证书（签名稳定，
+  重新编译不会让屏幕录制授权失效）；没有这张证书时退回 ad-hoc。想彻底免掉 Gatekeeper，
+  需要 Apple 开发者证书 + 公证
+- 屏幕录制授权绑在代码签名上：**用 ad-hoc 签名时每次重新编译都会失效**，需要重新授权并重启 app
+- API Key 存在 `~/Library/Application Support/JiaoGe/config.json`（权限 600），没走钥匙串
+- 排查屏幕录制问题时，app 启动会写一行权限状态到 `/tmp/jiaoge-perm.log`；
+  另可运行 `--check-capture` 做完整自检
 - 命令行里也能问一句，方便排查：`JIAOGE_API_URL=… JIAOGE_API_KEY=… ./build/JiaoGe.app/Contents/MacOS/JiaoGe --ask "你好"`
