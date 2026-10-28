@@ -1,6 +1,8 @@
 # 安装说明（给使用者）
 
-只支持 **macOS 12 以上**（Apple Silicon）。Windows 和 Linux 用不了。
+> **本 Release 提供的安装包只支持 Apple Silicon（M 系列芯片）的 Mac，macOS 12 以上。**
+> Intel 芯片的 Mac 运行不了，需要自己装完整 Xcode 后用 `ARCHS=universal ./build.sh` 编译。
+> Windows / Linux 无法运行。
 
 ## 1. 安装
 
