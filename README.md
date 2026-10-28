@@ -235,6 +235,8 @@ zip 里包含 `JiaoGe.app` 和一份 `安装说明.txt`，用户解压 → 拖�
   重新编译不会让屏幕录制授权失效）；没有这张证书时退回 ad-hoc
 - 屏幕录制授权绑在代码签名上：**用 ad-hoc 签名时每次重新编译都会失效**，需要重新授权并重启 app
 - API Key 存在 `~/Library/Application Support/JiaoGe/config.json`（权限 600），没走钥匙串
-- 排查屏幕录制问题时，app 启动会写一行权限状态到 `/tmp/jiaoge-perm.log`；
-  另可运行 `--check-capture` 做完整自检
+- **一键自检**：`./build/JiaoGe.app/Contents/MacOS/JiaoGe --self-test`
+  会检查皇冠素材、配置目录、大模型配置、屏幕录制权限、快捷键、剪贴板，逐项打勾/叉。
+  别人反馈问题时让他跑这个把结果贴过来最省事
+- 只查截图权限可以用 `--check-capture`；app 启动也会写一行权限状态到 `/tmp/jiaoge-perm.log`
 - 命令行里也能问一句：`JIAOGE_API_URL=… JIAOGE_API_KEY=… ./build/JiaoGe.app/Contents/MacOS/JiaoGe --ask "你好"`

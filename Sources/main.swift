@@ -825,6 +825,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             runAsk(CommandLine.arguments[i + 1])
         }
 
+        if CommandLine.arguments.contains("--self-test") {
+            runSelfTest()
+            NSApp.terminate(nil)
+        }
+
         if CommandLine.arguments.contains("--check-capture") {
             print("屏幕录制权限预检: \(CGPreflightScreenCaptureAccess() ? "有" : "没有")")
             let path = "/tmp/jiaoge-capture-test.png"
@@ -882,6 +887,71 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    /// 一键自检：别人反馈问题时让他跑这个
+    func runSelfTest() {
+        func line(_ ok: Bool, _ text: String) {
+            print("  \(ok ? "✅" : "❌") \(text)")
+        }
+        print("蕉哥自检")
+        print("  路径: \(Bundle.main.bundlePath)")
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        print("  版本: \(version)  系统: \(ProcessInfo.processInfo.operatingSystemVersionString)")
+        print("  架构: \(Self.architecture())")
+        print("")
+
+        // 1. 皇冠素材
+        var loaded = 0
+        for key in ["iron_1", "brass_4", "bronze_2", "silver_3", "gold_1", "platinum_4",
+                    "emerald_2", "diamond_3", "master", "grandmaster", "challenger", "god"] {
+            if CrownAssets.image(for: key) != nil { loaded += 1 }
+        }
+        line(loaded == 12, "皇冠素材: \(loaded)/12 可加载")
+
+        // 2. 配置目录可写
+        let probe = Store.dir.appendingPathComponent(".selftest")
+        let writable = (try? "ok".write(to: probe, atomically: true, encoding: .utf8)) != nil
+        try? FileManager.default.removeItem(at: probe)
+        line(writable, "配置目录可写: \(Store.dir.path)")
+
+        // 3. 大模型配置
+        let cfg = Store.read("config.json", as: ChatConfig.self)
+        line(cfg?.configured ?? false,
+             "大模型配置: " + (cfg.map { "\($0.model) @ \($0.baseURL)" } ?? "未配置（聊天和翻译不可用，识字不受影响）"))
+
+        // 4. 屏幕录制权限
+        line(CGPreflightScreenCaptureAccess(), "屏幕录制权限: \(CGPreflightScreenCaptureAccess() ? "已授权" : "未授权（截图功能不可用）")")
+
+        // 5. 全局快捷键能否注册
+        var registered: [String] = []
+        for (name, code) in [("⌃⌥V", ClipboardHotKey.keyCode), ("⌃⌥O", ScreenHotKey.ocrCode),
+                             ("⌃⌥T", ScreenHotKey.translateCode)] {
+            if GlobalHotKey(keyCode: code, modifiers: ClipboardHotKey.modifiers) != nil {
+                registered.append(name)
+            }
+        }
+        let others = NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }.count
+        let hotKeyNote = registered.count == 3
+            ? ""
+            : (others > 0 ? "（蕉哥已经在运行，这项必然失败，属正常）" : "（可能被别的 app 占用了）")
+        line(registered.count == 3, "全局快捷键: "
+             + (registered.isEmpty ? "注册失败" : registered.joined(separator: " ")) + hotKeyNote)
+
+        // 6. 剪贴板可读
+        line(NSPasteboard.general.types != nil, "剪贴板可访问")
+        print("")
+    }
+
+    static func architecture() -> String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
     }
 
     // MARK: 主循环
