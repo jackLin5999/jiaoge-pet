@@ -215,8 +215,9 @@ Esc 收起（右键宠物留给剪贴板了）。
 
 zip 里包含 `JiaoGe.app` 和一份 `安装说明.txt`，用户解压 → 拖进「应用程序」→ 右键打开即可。
 
-第一次打开会被 Gatekeeper 拦（没做公证），放行方式任选：右键 → 打开；或系统设置 → 隐私与安全性 →
-「仍要打开」；或 `xattr -dr com.apple.quarantine /Applications/JiaoGe.app`。
+第一次打开会被 Gatekeeper 拦（没做公证）。放行：先点「完成」，然后去系统设置 → 隐私与安全性 →
+「仍要打开」；或者直接 `xattr -dr com.apple.quarantine /Applications/JiaoGe.app`。
+（新版 macOS 上「右键 → 打开」不一定有「打开」选项，以系统设置那条为准。）
 
 **架构**：`ARCHS=universal ./build.sh` 会尝试编通用二进制，但命令行工具里没有 x86_64 的 Swift 兼容库，
 必须装完整 Xcode 才能成功，否则自动退回本机架构（当前 arm64）。
