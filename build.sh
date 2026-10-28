@@ -7,7 +7,11 @@ rm -rf "${APP}"
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 
 # 皇冠素材
-if [ -d Resources ]; then cp -R Resources/. "${APP}/Contents/Resources/"; fi
+if [ -d Resources ]; then
+    cp -R Resources/. "${APP}/Contents/Resources/"
+    # Finder 会往目录里丢 .DS_Store，别打进 app 包
+    find "${APP}/Contents/Resources" -name ".DS_Store" -delete
+fi
 
 # 编译。默认只编本机架构（快）；ARCHS=universal 时编 arm64 + x86_64 再合并，供发布用
 SOURCES=(Sources/main.swift Sources/Features.swift)
