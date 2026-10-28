@@ -113,10 +113,8 @@ xattr -dr com.apple.quarantine /Applications/JiaoGe.app
 
 实测能识别：中、日、韩、英、法、德、西、葡、越南、俄、阿拉伯、泰、印地。
 
-Vision 对"指定语言列表"非常敏感——列表里混入中文，韩文就会被认成汉字、西里尔字母会失效，
-语言一多整体精度也会掉。所以按文字类型**分轮识别**：中日英 → 韩 → 阿拉伯 → 泰 → 印地 → 自动，
-**第一轮达标（字数够、置信度 ≥ 0.7）就直接返回**，常见情况只跑一次（70–300ms）；
-其它语种才依次多跑几轮，通常 0.5 秒内出结果。
+识别全程在本地完成，不联网。常见文字一两百毫秒就出结果；遇到阿拉伯文、泰文、印地文这类
+少见的文字会多尝试几轮，通常半秒内。
 
 少数拉丁字母语言的变音符号会丢（比如西语的 ñ、越南语的声调），但文字本身是对的，不影响翻译。
 
@@ -247,7 +245,11 @@ Esc 收起（右键宠物留给剪贴板了）。
 - 闲着的时候眼睛会跟着鼠标转
 - 鼠标不在它身上时窗口自动点击穿透，不会挡住后面的操作
 
-## 从源码运行（开发者）
+## 开机自启
+
+菜单里的「开机自动启动」，勾上以后开机自动出现（用系统的 `SMAppService`，需要 macOS 13+）。
+
+## 从源码运行
 
 ```bash
 ./run.sh        # 编译并启动
@@ -257,52 +259,11 @@ Esc 收起（右键宠物留给剪贴板了）。
 需要 Command Line Tools（`xcode-select --install`），不用装完整 Xcode。
 启动后没有 Dock 图标，菜单栏会多一个 🍌。
 
-## 开机自启
+## 开发者
 
-菜单里的「开机自动启动」，勾上以后开机自动出现（用系统的 `SMAppService`，需要 macOS 13+）。
+造型怎么画的、签名和屏幕录制权限的关系、离线识别的分轮策略、自检命令，
+都写在 [docs/DEVELOPING.md](docs/DEVELOPING.md)。
 
-## 改造型
+## 许可
 
-造型是直接按参考图的像素坐标画的：`Banana` 里每个部件的点都写成参考图（560×750）上的坐标，
-画的时候用 `artToView` 统一缩放，所以改大小只要动 `CELL`，几何数字不用重算。
-
-- `Banana.body` / `stem` / `leftArm` / `rightArm` / `feet` / `spots`：各部件轮廓
-- `rgb(...)`：配色全部取自参考图，**按 Display P3 标注**——参考图就是 P3 色彩空间，写成 sRGB 会明显偏淡
-- `PetController.lines` / `stemLines` / `eyeLines` …：各部位随机说的台词
-- `makePose()`：所有动画曲线（呼吸、眨眼、跳、挥手、压扁、拖拽），想加动作在这里加
-- `hitAreaContains`：可点击区域
-
-## 发布到 GitHub
-
-```bash
-./release.sh      # 产出 build/JiaoGe-1.0.0.zip
-```
-
-zip 里包含 `JiaoGe.app` 和一份 `安装说明.txt`，用户解压 → 拖进「应用程序」→ 右键打开即可。
-
-第一次打开会被 Gatekeeper 拦（没做公证）。放行：先点「完成」，然后去系统设置 → 隐私与安全性 →
-「仍要打开」；或者直接 `xattr -dr com.apple.quarantine /Applications/JiaoGe.app`。
-（新版 macOS 上「右键 → 打开」不一定有「打开」选项，以系统设置那条为准。）
-
-**架构**：`ARCHS=universal ./build.sh` 会尝试编通用二进制，但命令行工具里没有 x86_64 的 Swift 兼容库，
-必须装完整 Xcode 才能成功，否则自动退回本机架构（当前 arm64）。
-
-## 文件
-
-- `Sources/main.swift`：造型、绘制、动画、气泡、控制器
-- `Sources/Features.swift`：大模型配置与请求、聊天输入框、设置窗口、剪贴板面板、OCR
-- `Resources/crowns/`：段位皇冠素材
-- `INSTALL.md`：给使用者的安装说明
-
-## 说明
-
-- 用 Command Line Tools 的 `swiftc` 直接编译，不需要装 Xcode
-- 签名：`build.sh` 优先用钥匙串里的 `JiaoGe Local Signing` 自签名证书（签名稳定，
-  重新编译不会让屏幕录制授权失效）；没有这张证书时退回 ad-hoc
-- 屏幕录制授权绑在代码签名上：**用 ad-hoc 签名时每次重新编译都会失效**，需要重新授权并重启 app
-- API Key 存在 `~/Library/Application Support/JiaoGe/config.json`（权限 600），没走钥匙串
-- **一键自检**：`./build/JiaoGe.app/Contents/MacOS/JiaoGe --self-test`
-  会检查皇冠素材、配置目录、大模型配置、屏幕录制权限、快捷键、剪贴板，逐项打勾/叉。
-  别人反馈问题时让他跑这个把结果贴过来最省事
-- 只查截图权限可以用 `--check-capture`；app 启动也会写一行权限状态到 `/tmp/jiaoge-perm.log`
-- 命令行里也能问一句：`JIAOGE_API_URL=… JIAOGE_API_KEY=… ./build/JiaoGe.app/Contents/MacOS/JiaoGe --ask "你好"`
+[MIT](LICENSE)
