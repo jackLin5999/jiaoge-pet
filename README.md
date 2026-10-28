@@ -14,9 +14,75 @@
 | 🏆 **游戏化养成** | 点击、聊天、干活攒经验，从黑铁打到王者，头顶皇冠随段位更换 |
 
 > **平台**：仅支持 macOS 12+（Apple Silicon；Intel 需自行编译通用二进制），Windows / Linux 无法运行。
-> **安装**：到 [Releases](https://github.com/jackLin5999/jiaoge-pet/releases) 下载 zip，步骤见 [INSTALL.md](INSTALL.md)；开发直接 `./run.sh`。
+> **安装**：到 [Releases](https://github.com/jackLin5999/jiaoge-pet/releases) 下载 zip —— 详细步骤见下面的[安装与首次打开](#安装与首次打开)；开发者直接 `./run.sh`。
 
 ---
+
+## 安装与首次打开
+
+### 1. 下载
+
+到 [Releases](https://github.com/jackLin5999/jiaoge-pet/releases) 下载 **`JiaoGe-1.0.0.zip`**。
+
+> ⚠️ 别下成 `Source code (zip)` —— 那是源码，里面没有能直接运行的 app。
+
+### 2. 拖进应用程序
+
+解压后把 **JiaoGe.app** 拖到「应用程序」文件夹。
+
+### 3. 第一次打开（会被系统拦一次）
+
+双击会弹出「**Apple 无法验证 "JiaoGe.app" 是否包含可能危害 Mac 安全或泄漏隐私的恶意软件**」。
+
+这是**正常的**：个人作品没有做 Apple 公证，不代表有问题。点「**完成**」——千万别点「移到废纸篓」。
+
+然后任选一种放行：
+
+**方式一：系统设置（推荐）**
+1. 打开 **系统设置 → 隐私与安全性**
+2. 往下滚，会看到「已阻止使用 JiaoGe.app」→ 点「**仍要打开**」
+3. 验证指纹或密码
+4. 再双击 JiaoGe.app，在弹出的「确定要打开吗」里点「打开」
+
+**方式二：终端一条命令**
+```bash
+xattr -dr com.apple.quarantine /Applications/JiaoGe.app
+```
+之后再双击就直接打开，没有任何提示。
+
+> 新版 macOS 上「右键 → 打开」不一定出现「打开」选项，以系统设置那条为准。
+
+### 4. 授权屏幕录制（截图功能要用）
+
+第一次按 ⌃⌥O 或 ⌃⌥T，系统会提示「蕉哥想录制你的屏幕」→ 点「允许」。
+**允许之后要把 app 退出再重新打开**，权限才生效（macOS 的规定）。
+
+之后如果截图提示截不到图，去 系统设置 → 隐私与安全性 → 屏幕录制，确认 JiaoGe 在列表里并已打开。
+
+### 5. 连接大模型（聊天和翻译要用）
+
+点菜单栏 🍌 →「**大模型设置…**」：
+
+| 项目 | 填什么 |
+|---|---|
+| 服务 | 选 DeepSeek |
+| API 地址 | `https://api.deepseek.com/v1` |
+| 模型 | `deepseek-flash` |
+| API Key | 你自己的密钥 |
+
+点「测试连接」确认通了再保存。
+
+> **截图识字不需要配置**，只有翻译和聊天需要联网。
+
+### 遇到问题
+
+先跑一次自检，把输出贴到 [Issues](https://github.com/jackLin5999/jiaoge-pet/issues)：
+
+```bash
+/Applications/JiaoGe.app/Contents/MacOS/JiaoGe --self-test
+```
+
+它会逐项检查素材、配置、权限、快捷键，哪一项打叉就是哪儿的问题。
 
 ## 截图识字 / 截图翻译
 
@@ -181,16 +247,15 @@ Esc 收起（右键宠物留给剪贴板了）。
 - 闲着的时候眼睛会跟着鼠标转
 - 鼠标不在它身上时窗口自动点击穿透，不会挡住后面的操作
 
-## 运行与安装
+## 从源码运行（开发者）
 
 ```bash
 ./run.sh        # 编译并启动
 ./build.sh      # 只编译，产物在 build/JiaoGe.app
 ```
 
-启动后没有 Dock 图标，菜单栏会多一个 🍌。编译需要 Command Line Tools（`xcode-select --install`）。
-
-给普通用户分发时用预编译包，对方不需要装任何工具，步骤见 [INSTALL.md](INSTALL.md)。
+需要 Command Line Tools（`xcode-select --install`），不用装完整 Xcode。
+启动后没有 Dock 图标，菜单栏会多一个 🍌。
 
 ## 开机自启
 
