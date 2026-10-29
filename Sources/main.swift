@@ -423,6 +423,11 @@ final class PetView: NSView {
     }
 
     override func rightMouseDown(with event: NSEvent) {
+        // 按住 Option 右键 = 打开完整菜单（菜单栏图标被挡住时的备用入口）
+        if event.modifierFlags.contains(.option), let menu = controller?.contextMenu() {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+            return
+        }
         controller?.toggleClipboardPanel()
     }
 }
@@ -939,7 +944,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         line(registered.count == 3, "全局快捷键: "
              + (registered.isEmpty ? "注册失败" : registered.joined(separator: " ")) + hotKeyNote)
 
-        // 6. 剪贴板可读
+        // 6. 菜单栏图标
+        let statusVisible = statusItem?.button?.window != nil && (statusItem?.isVisible ?? false)
+        line(statusVisible, "菜单栏图标: \(statusVisible ? "已显示" : "没有显示（菜单栏可能太挤，按住 ⌥ 右键宠物可打开菜单）")")
+
+        // 7. 剪贴板可读
         line(NSPasteboard.general.types != nil, "剪贴板可访问")
         print("")
     }
@@ -1327,6 +1336,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 菜单
 
+    func contextMenu() -> NSMenu {
+        let menu = NSMenu()
+        fillMenu(menu)
+        return menu
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         fillMenu(menu)
@@ -1564,6 +1579,13 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         fillMenu(menu)          // 先填一份兜底，每次打开时 delegate 还会再刷
         menu.delegate = self
         statusItem.menu = menu
+
+        // 菜单栏如果放不下（刘海屏 + 图标很多），图标会被系统藏掉，这里做个兜底提示
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard let self = self, !self.statusItem.isVisible else { return }
+            self.speak("菜单栏放不下我…按住 ⌥ 右键我，能打开菜单",
+                       subtitle: "备用入口", duration: 8, maxWidth: 300)
+        }
     }
 
     // MARK: 偏好与统计
@@ -1992,7 +2014,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func greetByTime() {
         // 还没配置模型：多半是刚装好，先告诉他去哪儿找我
         if !config.configured {
-            speak("第一次用？点菜单栏的 🍌 设置一下", subtitle: "我住在右上角", duration: 5, maxWidth: 280)
+            speak("第一次用？点菜单栏右上角的 🍌 设置；找不到就按住 ⌥ 右键我", subtitle: "我住在右上角", duration: 8, maxWidth: 300)
             return
         }
         let h = hourNow()

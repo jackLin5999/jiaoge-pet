@@ -236,6 +236,7 @@ the crown changes on every level-up. Assets live in `Resources/crowns/`; preview
 | Rapid clicks | Shows "combo ×N"; at 4 it widens its eyes, at 7 it goes ×× eyes and shakes its head; lines escalate too |
 | Drag | Picks it up (body stretches), it stays where you drop it |
 | Right click | Open / close the clipboard panel |
+| **⌥ + right click** | Open the full menu (fallback if the menu bar icon is hidden) |
 | Menu bar 🍌 | Full menu; shows the pomodoro countdown while running |
 
 The combo counter resets 2.2 s after you stop. Four sizes: small / medium / large / huge, remembered across launches.
