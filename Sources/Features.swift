@@ -1250,3 +1250,85 @@ final class ClipboardPanel: NSPanel {
         if isVisible { hide() }
     }
 }
+
+// MARK: - 结果查看窗口
+
+/// 长文本结果（识别全文、长译文）用这个窗口看，可滚动、可选中
+final class ResultWindow: NSPanel {
+    private let scroll = NSScrollView()
+    private let textView = NSTextView()
+    private var onCopy: (() -> Void)?
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 480, height: 400),
+                   styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        title = "识别结果"
+        isReleasedWhenClosed = false
+        hidesOnDeactivate = false
+        level = .floating
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 480, height: 400))
+
+        scroll.frame = NSRect(x: 16, y: 16, width: 448, height: 324)
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.borderType = .bezelBorder
+        scroll.drawsBackground = true
+
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = true
+        textView.backgroundColor = .textBackgroundColor
+        textView.font = NSFont.systemFont(ofSize: 13)
+        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        scroll.documentView = textView
+        root.addSubview(scroll)
+
+        let copy = NSButton(title: "复制全部", target: self, action: #selector(copyAll))
+        copy.frame = NSRect(x: 16, y: 352, width: 100, height: 30)
+        copy.bezelStyle = .rounded
+        root.addSubview(copy)
+
+        let close = NSButton(title: "关闭", target: self, action: #selector(closeSelf))
+        close.frame = NSRect(x: 362, y: 352, width: 102, height: 30)
+        close.bezelStyle = .rounded
+        close.keyEquivalent = "\u{1b}"
+        root.addSubview(close)
+
+        contentView = root
+    }
+
+    func present(text: String, title: String, onCopy: (() -> Void)? = nil) {
+        self.title = title
+        self.onCopy = onCopy
+        textView.string = text
+        textView.scrollToBeginningOfDocument(nil)
+        center()
+        NSApp.activate(ignoringOtherApps: true)
+        makeKeyAndOrderFront(nil)
+        makeFirstResponder(textView)
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.isVisible else { return }
+            self.makeKey()
+            self.makeFirstResponder(self.textView)
+        }
+    }
+
+    @objc private func copyAll() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(textView.string, forType: .string)
+        onCopy?()
+        NSSound(named: "Tink")?.play()
+    }
+
+    @objc private func closeSelf() {
+        close()
+        NSApp.deactivate()
+    }
+}

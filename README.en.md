@@ -96,6 +96,10 @@ Still stuck? Run the self-test and paste the output into an [issue](https://gith
 
 Recognition runs on-device via Apple's Vision framework, **no network involved**; only the translation step calls the API.
 
+**Long results**: the bubble shows the first ~120 characters — **click the bubble** to open a scrollable
+"Recognition result" window where you can select and copy everything. The menu also has *View last result*.
+Translation results work the same way.
+
 ### Two translation modes
 
 | Mode | How it works | Good for |

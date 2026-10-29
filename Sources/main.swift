@@ -435,6 +435,13 @@ final class PetView: NSView {
 // MARK: - 气泡
 
 final class BubbleView: NSView {
+    /// 气泡可点时的回调（长结果点一下展开）
+    var onTap: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onTap?()
+    }
+
     var text: String = "" {
         didSet { needsDisplay = true }
     }
@@ -566,7 +573,8 @@ final class BubbleWindow: NSWindow {
     private(set) var isSticky = false
 
     func show(_ text: String, subtitle: String = "", duration: TimeInterval = 2.0,
-              maxWidth: CGFloat = 240, sticky: Bool = false, above petWindow: NSWindow) {
+              maxWidth: CGFloat = 240, sticky: Bool = false,
+              onTap: (() -> Void)? = nil, above petWindow: NSWindow) {
         if hideItem != nil && alphaValue > 0 {
             // 换内容时不要闪一下
             alphaValue = 1
@@ -574,6 +582,8 @@ final class BubbleWindow: NSWindow {
         hideItem?.cancel()
         bubbleView.text = text
         bubbleView.subtitle = subtitle
+        bubbleView.onTap = onTap
+        ignoresMouseEvents = (onTap == nil)      // 可展开的气泡要能接收点击
         setContentSize(bubbleView.measuredSize(maxWidth: maxWidth))
         follow(petWindow)
         alphaValue = 1
@@ -602,6 +612,8 @@ final class BubbleWindow: NSWindow {
 
     func hideNow() {
         isSticky = false
+        bubbleView.onTap = nil
+        ignoresMouseEvents = true
         hideItem?.cancel()
         alphaValue = 0
         orderOut(nil)
@@ -736,6 +748,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // 每天被戳的次数
     var lastSpokenLine = ""
+    var resultWindow: ResultWindow?
+    var lastResultText = ""
     var soundEnabled = true
     var soundCache: [String: NSSound] = [:]
     var lastSummaryDay = ""
@@ -1026,8 +1040,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if leftEdge || rightEdge {
             let p = NSEvent.mouseLocation
             let onPet = window.frame.contains(p)
-            // 按在自己身上多半是要拖它，别把译文收掉；点别处才收
-            if !onPet { bubble.hideIfSticky() }
+            let onBubble = bubble.isVisible && bubble.frame.contains(p)
+            // 按在自己身上多半是要拖它；按在气泡上是想展开；这两种都不收
+            if !onPet && !onBubble { bubble.hideIfSticky() }
             if let panel = clipPanel, panel.isVisible, !panel.frame.contains(p) {
                 // 右键点宠物是「开关面板」，交给宠物自己处理，否则会关了又开
                 if leftEdge || !onPet { panel.hide() }
@@ -1303,9 +1318,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: 气泡与粒子
 
     func speak(_ text: String, subtitle: String = "", duration: TimeInterval = 2.0,
-               maxWidth: CGFloat = 240, sticky: Bool = false) {
+               maxWidth: CGFloat = 240, sticky: Bool = false, onTap: (() -> Void)? = nil) {
         bubble.show(text, subtitle: subtitle, duration: duration, maxWidth: maxWidth,
-                    sticky: sticky, above: window)
+                    sticky: sticky, onTap: onTap, above: window)
     }
 
     func spawnHearts() {
@@ -1386,6 +1401,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                                    action: #selector(captureTranslateAction), keyEquivalent: "")
         translate.target = self
         menu.addItem(translate)
+
+        let lastResult = NSMenuItem(title: "查看上次识别结果",
+                                    action: #selector(showLastResult), keyEquivalent: "")
+        lastResult.target = self
+        lastResult.isEnabled = !lastResultText.isEmpty
+        menu.addItem(lastResult)
 
         let targetMenu = NSMenu()
         for (index, name) in SettingsWindow.targetLanguages.enumerated() {
@@ -2496,8 +2517,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.translateText(clean)
                 } else {
                     self.putOnPasteboard(clean)
-                    self.speak(String(clean.prefix(60)), subtitle: "已复制 \(clean.count) 字",
-                               duration: 3.5, maxWidth: 300)
+                    self.lastResultText = clean
+                    let preview = clean.count > 120 ? String(clean.prefix(120)) + "…" : clean
+                    self.speak(preview,
+                               subtitle: "已复制 \(clean.count) 字 · 点气泡看全文",
+                               duration: 10, maxWidth: 320,
+                               onTap: { [weak self] in self?.showResult(clean, title: "识别结果") })
                 }
             }
         }
@@ -2518,6 +2543,21 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 直接把截图发给多模态模型翻译
+    /// 长结果用独立窗口展示（可滚动、可选中）
+    func showResult(_ text: String, title: String) {
+        lastResultText = text
+        if resultWindow == nil { resultWindow = ResultWindow() }
+        resultWindow?.present(text: text, title: title)
+    }
+
+    @objc func showLastResult() {
+        guard !lastResultText.isEmpty else {
+            speak("还没有识别过东西", duration: 2.5)
+            return
+        }
+        showResult(lastResultText, title: "识别结果")
+    }
+
     func translateImage(_ png: Data) {
         speak("翻译中…", duration: 60, maxWidth: 160)
         llmVision(config: config, prompt: visionInstruction(), imagePNG: png) { [weak self] result in
@@ -2528,7 +2568,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.putOnPasteboard(clean)
                 self.happyEnd = self.t + 1.2
                 self.playSound("Pop", volume: 0.3)
-                self.speak(clean, subtitle: "译文已复制 · 点一下屏幕收起", maxWidth: 320, sticky: true)
+                self.lastResultText = clean
+                self.speak(clean, subtitle: "译文已复制 · 点气泡看全文", maxWidth: 320, sticky: true,
+                           onTap: { [weak self] in self?.showResult(clean, title: "译文") })
             case .failure(let error):
                 let hint = self.config.vision ? "（这个模型可能不支持看图）" : ""
                 self.speak("翻译失败：\(error.localizedDescription)\(hint)", duration: 6, maxWidth: 300)
@@ -2549,7 +2591,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             putOnPasteboard(out)
             happyEnd = t + 1.2
-            speak(out, subtitle: "译文已复制 · 点一下屏幕收起", maxWidth: 320, sticky: true)
+            lastResultText = out
+            speak(out, subtitle: "译文已复制 · 点气泡看全文", maxWidth: 320, sticky: true,
+                  onTap: { [weak self] in self?.showResult(out, title: "译文") })
         }
 
         func step() {
