@@ -845,8 +845,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         if CommandLine.arguments.contains("--self-test") {
-            runSelfTest()
-            NSApp.terminate(nil)
+            // 等菜单栏布局完成再测，否则读到的坐标还是 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                self.runSelfTest()
+                NSApp.terminate(nil)
+            }
         }
 
         if CommandLine.arguments.contains("--check-capture") {
@@ -958,9 +961,17 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         line(registered.count == 3, "全局快捷键: "
              + (registered.isEmpty ? "注册失败" : registered.joined(separator: " ")) + hotKeyNote)
 
-        // 6. 菜单栏图标
-        let statusVisible = statusItem?.button?.window != nil && (statusItem?.isVisible ?? false)
-        line(statusVisible, "菜单栏图标: \(statusVisible ? "已显示" : "没有显示（菜单栏可能太挤，按住 ⌥ 右键宠物可打开菜单）")")
+        // 6. 菜单栏图标：看按钮窗口实际落在屏幕的什么位置
+        if let win = statusItem?.button?.window {
+            let frame = win.frame
+            let screenWidth = NSScreen.main?.frame.width ?? 0
+            let onScreen = frame.width > 0 && frame.maxX > 0 && frame.minX < screenWidth
+            let hint = onScreen ? "已显示" : "被挤到屏幕外（菜单栏没空间，按住 ⌥ 右键宠物仍可打开菜单）"
+            line(onScreen, String(format: "菜单栏图标: %@  位置 x=%.0f 宽 %.0f / 屏幕 %.0f",
+                                  hint, frame.minX, frame.width, screenWidth))
+        } else {
+            line(false, "菜单栏图标: 没有创建（异常，请反馈）")
+        }
 
         // 7. 剪贴板可读
         line(NSPasteboard.general.types != nil, "剪贴板可访问")
