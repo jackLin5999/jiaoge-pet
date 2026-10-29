@@ -24,7 +24,7 @@ A macOS desktop banana pet that breathes, blinks and waves — and happens to be
 
 ### 1. Download
 
-Get **`JiaoGe-1.0.0.zip`** from [Releases](https://github.com/jackLin5999/jiaoge-pet/releases).
+Get **`JiaoGe-x.x.x.zip`** from [Releases](https://github.com/jackLin5999/jiaoge-pet/releases/latest) (the newest one).
 
 > ⚠️ Don't download `Source code (zip)` — that's the source, there's no runnable app inside.
 

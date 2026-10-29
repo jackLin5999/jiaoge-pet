@@ -24,7 +24,7 @@
 
 ### 1. 下载
 
-到 [Releases](https://github.com/jackLin5999/jiaoge-pet/releases) 下载 **`JiaoGe-1.0.0.zip`**。
+到 [Releases](https://github.com/jackLin5999/jiaoge-pet/releases/latest) 下载 **`JiaoGe-x.x.x.zip`**（版本号最大的那个）。
 
 > ⚠️ 别下成 `Source code (zip)` —— 那是源码，里面没有能直接运行的 app。
 

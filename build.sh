@@ -27,11 +27,13 @@ if [ "$ARCHS" = "universal" ]; then
     else
         echo "⚠️ 没能生成通用二进制（命令行工具缺 x86_64 的 Swift 兼容库，装完整 Xcode 才行）"
         echo "   退回本机架构：$(uname -m)"
-        swiftc -O -o "${APP}/Contents/MacOS/JiaoGe" "${SOURCES[@]}" "${FLAGS[@]}"
+        swiftc -O -target "$(uname -m)-apple-macos12.0" \
+            -o "${APP}/Contents/MacOS/JiaoGe" "${SOURCES[@]}" "${FLAGS[@]}"
     fi
     rm -rf "$TMP"
 else
-    swiftc -O -o "${APP}/Contents/MacOS/JiaoGe" "${SOURCES[@]}" "${FLAGS[@]}"
+    swiftc -O -target "$(uname -m)-apple-macos12.0" \
+        -o "${APP}/Contents/MacOS/JiaoGe" "${SOURCES[@]}" "${FLAGS[@]}"
 fi
 
 cat > "${APP}/Contents/Info.plist" <<'PLIST'
@@ -44,8 +46,8 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>JiaoGe</string>
     <key>CFBundleIdentifier</key><string>local.jiaoge.pet</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>1.0.1</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSUIElement</key><true/>
     <key>NSAppTransportSecurity</key>
     <dict>
