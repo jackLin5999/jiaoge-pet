@@ -41,6 +41,7 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleName</key><string>蕉哥</string>
     <key>CFBundleDisplayName</key><string>蕉哥</string>
     <key>CFBundleExecutable</key><string>JiaoGe</string>
