@@ -67,6 +67,10 @@ If screenshots later fail, check System Settings → Privacy & Security → Scre
 
 Click the 🍌 in the menu bar → **Model settings…**
 
+> **Can't find the 🍌 in the menu bar?** Hold **⌥** and **right-click the pet** — the full menu pops up there.
+> macOS hides status items when the menu bar runs out of room; this is the fallback.
+> On first launch without a configured model, the settings window also opens by itself.
+
 | Field | Value |
 |---|---|
 | Provider | DeepSeek |
