@@ -2044,9 +2044,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func greetByTime() {
-        // 还没配置模型：多半是刚装好，先告诉他去哪儿找我
+        // 还没配置模型：多半是刚装好。直接弹设置窗口，不依赖菜单栏图标
         if !config.configured {
-            speak("第一次用？点菜单栏右上角的 🍌 设置；找不到就按住 ⌥ 右键我", subtitle: "我住在右上角", duration: 8, maxWidth: 300)
+            speak("第一次用？先把模型配上就能聊天了", subtitle: "设置窗口这就打开", duration: 5, maxWidth: 300)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.openSettings()
+            }
             return
         }
         let h = hourNow()
