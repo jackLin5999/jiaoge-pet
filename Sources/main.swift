@@ -863,6 +863,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // 剪贴板
     var clipboardEnabled = true
+    var clipExcludedApps: [String: String] = [:]      // bundle ID → 显示名
+    var lastOtherApp: (id: String, name: String)?
     var clipItems: [ClipEntry] = []
     var clipChangeCount = -1
     var lastClipPoll: TimeInterval = -10
@@ -957,6 +959,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupHotKey()
 
         startNetworkMonitor()
+        startTrackingFrontApp()
 
         // 临时诊断：记录本进程真实的屏幕录制权限（区分终端启动 / open 启动）
         let permLog = "/tmp/jiaoge-perm.log"
@@ -1569,11 +1572,20 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 clipItemsMenu.append(item)
             }
         }
-        clipItemsMenu += [
-            .separator(),
-            action("记录剪贴板", #selector(toggleClipboard), on: clipboardEnabled),
-            action("清空历史", #selector(clearClipboard), enabled: !clipItems.isEmpty),
-        ]
+        clipItemsMenu += [.separator(), action("记录剪贴板", #selector(toggleClipboard), on: clipboardEnabled)]
+        if let app = lastOtherApp {
+            let builtIn = ClipPrivacy.builtInApps.contains(app.id)
+            clipItemsMenu.append(action("不记录「\(app.name)」", #selector(toggleClipExclusion),
+                                        on: builtIn || clipExcludedApps[app.id] != nil, enabled: !builtIn))
+        }
+        if !clipExcludedApps.isEmpty {
+            clipItemsMenu.append(folder("已排除的 App", clipExcludedApps.sorted { $0.value < $1.value }.map {
+                let item = action($0.value, #selector(removeClipExclusion(_:)))
+                item.representedObject = $0.key
+                return item
+            }))
+        }
+        clipItemsMenu.append(action("清空历史", #selector(clearClipboard), enabled: !clipItems.isEmpty))
         menu.addItem(folder("剪贴板", clipItemsMenu))
 
         // 番茄钟
@@ -1677,6 +1689,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let v = d.object(forKey: "stretchMinutes") as? Int, v >= 0 { stretchMinutes = v }
         if d.object(forKey: "clipboardEnabled") != nil { clipboardEnabled = d.bool(forKey: "clipboardEnabled") }
         if d.object(forKey: "quietInFullScreen") != nil { quietInFullScreen = d.bool(forKey: "quietInFullScreen") }
+        clipExcludedApps = d.dictionary(forKey: "clipExcludedApps") as? [String: String] ?? [:]
         config = Store.read("config.json", as: ChatConfig.self) ?? ChatConfig()
         if let entries = Store.read("clipboard.json", as: [ClipEntry].self) {
             clipItems = entries
@@ -1894,10 +1907,28 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return ["sk-", "sk_", "AKIA", "ghp_", "gho_", "xoxb-", "xoxp-"].contains { t.hasPrefix($0) }
     }
 
-    func pollClipboard() {
-        let pb = NSPasteboard.general
+    /// 记住最近一个不是自己的前台 app：点开宠物菜单或面板时，蕉哥自己会变成前台
+    func startTrackingFrontApp() {
+        noteFrontApp(NSWorkspace.shared.frontmostApplication)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] note in
+            self?.noteFrontApp(note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)
+        }
+    }
+
+    func noteFrontApp(_ app: NSRunningApplication?) {
+        guard let app = app, app != NSRunningApplication.current, let id = app.bundleIdentifier else { return }
+        lastOtherApp = (id, app.localizedName ?? id)
+    }
+
+    func pollClipboard(_ pb: NSPasteboard = .general) {
         guard pb.changeCount != clipChangeCount else { return }
         clipChangeCount = pb.changeCount
+
+        // 密码之类的内容连读都不读，文字和图片一起拦
+        guard !ClipPrivacy.shouldSkip(types: (pb.types ?? []).map { $0.rawValue },
+                                      appID: lastOtherApp?.id,
+                                      excluded: Set(clipExcludedApps.keys)) else { return }
 
         // 在访达里复制图片文件：优先当图片
         let urls = pb.readObjects(forClasses: [NSURL.self]) as? [URL] ?? []
@@ -2843,6 +2874,24 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clipboardEnabled.toggle()
         UserDefaults.standard.set(clipboardEnabled, forKey: "clipboardEnabled")
         if clipboardEnabled { clipChangeCount = NSPasteboard.general.changeCount }
+    }
+
+    @objc func toggleClipExclusion() {
+        guard let app = lastOtherApp else { return }
+        if clipExcludedApps.removeValue(forKey: app.id) != nil {
+            speak("「\(app.name)」里复制的又会记了", maxWidth: 300)
+        } else {
+            clipExcludedApps[app.id] = app.name
+            speak("「\(app.name)」里复制的不记了", subtitle: "以前记下的要手动清", duration: 3, maxWidth: 300)
+        }
+        UserDefaults.standard.set(clipExcludedApps, forKey: "clipExcludedApps")
+    }
+
+    @objc func removeClipExclusion(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let name = clipExcludedApps.removeValue(forKey: id) else { return }
+        UserDefaults.standard.set(clipExcludedApps, forKey: "clipExcludedApps")
+        speak("「\(name)」里复制的又会记了", maxWidth: 300)
     }
 
     @objc func clearClipboard() {

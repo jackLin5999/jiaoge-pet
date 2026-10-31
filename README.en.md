@@ -156,7 +156,13 @@ Images (screenshots, copied web images, image files from Finder) are stored as P
 panel. They're named by content hash, so duplicates aren't stored twice; files over 40 MB are skipped. Image files are
 deleted when the entry is evicted or the history is cleared.
 
-Single-token strings that look like secrets (`sk-`, `AKIA`, `ghp_` prefixes) are not recorded.
+These are not recorded:
+
+- Anything copied from a password manager (the standard "concealed" pasteboard markers are respected, and Apple Passwords, Keychain Access, 1Password, Bitwarden and others are skipped outright)
+- Single-token strings that look like secrets (`sk-`, `AKIA`, `ghp_` prefixes)
+- Apps you exclude: while in that app, use the 🍌 menu → Clipboard → "不记录「…」" (don't record)
+
+Everything else stays in the local `clipboard.json` (mode 600, not encrypted). Exclusions only affect future copies; use *Clear history* for what's already there.
 
 History lives in `~/Library/Application Support/JiaoGe/clipboard.json`, images in `clip/` next to it — readable only by your user.
 

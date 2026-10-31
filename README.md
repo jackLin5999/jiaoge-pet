@@ -157,7 +157,13 @@ xattr -dr com.apple.quarantine /Applications/JiaoGe.app
 图片（截图、网页里复制的图、访达里复制的图片文件）会存成 PNG，面板里显示缩略图和尺寸。
 图片按内容哈希命名，重复的图不会存两份；超过 40MB 的不记。条目被挤出历史或清空时，图片文件一起删掉。
 
-看起来像密钥的单行 token（`sk-`、`AKIA`、`ghp_` 这类前缀）不会被记录。
+这些内容不会被记录：
+
+- 密码管理器复制的内容（识别系统约定的敏感标记，Apple 密码、钥匙串访问、1Password、Bitwarden 等也直接跳过）
+- 看起来像密钥的单行 token（`sk-`、`AKIA`、`ghp_` 这类前缀）
+- 你排除的 App：在那个 App 里点菜单 🍌 →「剪贴板」→「不记录「xxx」」
+
+其他内容仍然存在本地的 `clipboard.json` 里（权限 600，未加密）。排除只对之后的复制生效，以前记下的要点「清空历史」。
 
 历史存在 `~/Library/Application Support/JiaoGe/clipboard.json`，图片在同目录的 `clip/` 下，都只有本机这个账号能读。
 
