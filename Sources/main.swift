@@ -568,6 +568,7 @@ final class BubbleView: NSView {
 final class BubbleWindow: NSWindow {
     private let bubbleView = BubbleView()
     private var hideItem: DispatchWorkItem?
+    private var settleTimer: Timer?
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 100, height: 48),
@@ -603,6 +604,7 @@ final class BubbleWindow: NSWindow {
             alphaValue = 1
         }
         hideItem?.cancel()
+        settleTimer?.invalidate()
         bubbleView.text = text
         bubbleView.subtitle = subtitle
         bubbleView.fillFromTop = sizingText != nil
@@ -617,6 +619,31 @@ final class BubbleWindow: NSWindow {
         isSticky = sticky
         guard !sticky else { return }        // 常驻模式不自动消失，等点击
         hide(after: duration)
+    }
+
+    /// 把生成时多占的位置收掉：底边不动，字跟着上边一起滑下来。
+    /// 每帧都重新贴到宠物头顶，收的时候拖动宠物也不会错位
+    func settle(maxWidth: CGFloat, maxHeight: CGFloat, above petWindow: NSWindow) {
+        settleTimer?.invalidate()
+        let from = frame.size
+        let to = bubbleView.measuredSize(maxWidth: maxWidth, maxHeight: maxHeight)
+        guard to != from else { return }
+        let start = CACurrentMediaTime()
+        let span: TimeInterval = 0.22
+        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self, weak petWindow] timer in
+            guard let self = self, let petWindow = petWindow else {
+                timer.invalidate()
+                return
+            }
+            let progress = min(1, (CACurrentMediaTime() - start) / span)
+            let eased = CGFloat(1 - pow(1 - progress, 3))
+            self.setContentSize(NSSize(width: (from.width + (to.width - from.width) * eased).rounded(),
+                                       height: (from.height + (to.height - from.height) * eased).rounded()))
+            self.follow(petWindow)
+            if progress >= 1 { timer.invalidate() }
+        }
+        RunLoop.main.add(timer, forMode: .common)     // 拖动宠物时也要接着收
+        settleTimer = timer
     }
 
     /// 过一会儿淡出，之前排的淡出作废
@@ -645,6 +672,7 @@ final class BubbleWindow: NSWindow {
         bubbleView.onTap = nil
         ignoresMouseEvents = true
         hideItem?.cancel()
+        settleTimer?.invalidate()
         alphaValue = 0
         orderOut(nil)
     }
@@ -2255,7 +2283,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 放得下就直接显示；放不下显示开头，点气泡看全文。对话框开着时回复留到下一句。
-    /// 大小和生成时保持一致，说完的一刻字不跳
+    /// 先按生成时的大小显示，再把多占的位置收掉
     func showChatReply(_ text: String, note: String = "") {
         guard !chatReaderOpen else { return }
         let duration: TimeInterval = chatInput?.isVisible == true ? 600 : 15
@@ -2264,12 +2292,15 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !clipped {
             speak(text, subtitle: note, duration: duration, maxWidth: 300, maxHeight: chatBubbleMaxHeight,
                   sizingText: sizing, minSize: chatBubbleMinSize)
-            return
+        } else {
+            speak(preview, subtitle: "\(note.isEmpty ? "共 \(text.count) 字" : note) · 点气泡看全文",
+                  duration: duration, maxWidth: 300, maxHeight: chatBubbleMaxHeight,
+                  sizingText: sizing, minSize: chatBubbleMinSize,
+                  onTap: { [weak self] in self?.showChatFullText() })
         }
-        speak(preview, subtitle: "\(note.isEmpty ? "共 \(text.count) 字" : note) · 点气泡看全文",
-              duration: duration, maxWidth: 300, maxHeight: chatBubbleMaxHeight,
-              sizingText: sizing, minSize: chatBubbleMinSize,
-              onTap: { [weak self] in self?.showChatFullText() })
+        if chatReservedHeight > 0 {
+            bubble.settle(maxWidth: 300, maxHeight: chatBubbleMaxHeight, above: window)
+        }
     }
 
     /// 不走 showResult：聊天内容不该变成「上次识别结果」。看完回到对话框接着聊
