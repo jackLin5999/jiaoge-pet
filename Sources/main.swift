@@ -1502,219 +1502,131 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func fillMenu(_ menu: NSMenu) {
-        // 最近复制的 5 条直接列在菜单顶部，省一层
-        if !clipItems.isEmpty {
-            for (i, entry) in clipItems.prefix(5).enumerated() {
-                let item = NSMenuItem(title: "\(i + 1)  " + entry.title,
-                                      action: #selector(copyClipItem(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = entry
-                menu.addItem(item)
-            }
-            menu.addItem(.separator())
-        }
+        // 自己管灰显：默认的自动启用会把 isEnabled = false 顶掉
+        menu.autoenablesItems = false
 
-        let chat = NSMenuItem(title: chatInput?.isVisible == true ? "关闭对话框" : "打开对话框",
-                              action: #selector(toggleChatAction), keyEquivalent: "")
-        chat.target = self
-        menu.addItem(chat)
-
-        // 番茄钟
-        let ocr = NSMenuItem(title: "截图识字（\(ScreenHotKey.ocrLabel)）",
-                             action: #selector(captureOCRAction), keyEquivalent: "")
-        ocr.target = self
-        menu.addItem(ocr)
-        let translateTitle = config.configured
-            ? "截图翻译（\(ScreenHotKey.translateLabel)）"
-            : "截图翻译（\(ScreenHotKey.translateLabel)）· 需先连接大模型"
-        let translate = NSMenuItem(title: translateTitle,
-                                   action: #selector(captureTranslateAction), keyEquivalent: "")
-        translate.target = self
-        menu.addItem(translate)
-
-        let lastResult = NSMenuItem(title: "查看上次识别结果",
-                                    action: #selector(showLastResult), keyEquivalent: "")
-        lastResult.target = self
-        lastResult.isEnabled = !lastResultText.isEmpty
-        menu.addItem(lastResult)
-
-        let targetMenu = NSMenu()
-        for (index, name) in SettingsWindow.targetLanguages.enumerated() {
-            let item = NSMenuItem(title: name, action: #selector(setTargetLanguage(_:)), keyEquivalent: "")
+        func action(_ title: String, _ selector: Selector, on: Bool = false, enabled: Bool = true) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
             item.target = self
-            item.representedObject = index == 0 ? "" : name
-            item.state = (index == 0 ? "" : name) == config.targetLanguage ? .on : .off
-            targetMenu.addItem(item)
+            item.state = on ? .on : .off
+            item.isEnabled = enabled
+            return item
         }
-        let targetItem = NSMenuItem(title: "翻译目标语言", action: nil, keyEquivalent: "")
-        targetItem.submenu = targetMenu
-        menu.addItem(targetItem)
-
-        let pomoMenu = NSMenu()
-        if pomoMode != .none {
-            let remain = max(0, Int((pomoEnd - clock).rounded(.up)))
-            let running = NSMenuItem(title: (pomoMode == .focus ? "专注中" : "休息中")
-                                        + String(format: " %d:%02d", remain / 60, remain % 60),
-                                     action: nil, keyEquivalent: "")
-            running.isEnabled = false
-            pomoMenu.addItem(running)
-            pomoMenu.addItem(.separator())
+        func note(_ title: String) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            return item
         }
-        let focusItem = NSMenuItem(title: "开始专注（\(focusMinutes) 分钟）",
-                                   action: #selector(startFocus), keyEquivalent: "")
-        focusItem.target = self
-        pomoMenu.addItem(focusItem)
-        let restItem = NSMenuItem(title: "开始休息（\(restMinutes) 分钟）",
-                                  action: #selector(startRest), keyEquivalent: "")
-        restItem.target = self
-        pomoMenu.addItem(restItem)
-        let stopItem = NSMenuItem(title: "停止", action: #selector(stopPomodoro), keyEquivalent: "")
-        stopItem.target = self
-        stopItem.isEnabled = pomoMode != .none || pomoPrompt?.isVisible == true
-        pomoMenu.addItem(stopItem)
-        pomoMenu.addItem(.separator())
-
-        let focusLenMenu = NSMenu()
-        for m in [15, 25, 50] {
-            let item = NSMenuItem(title: "\(m) 分钟", action: #selector(setFocusMinutes(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = m
-            item.state = m == focusMinutes ? .on : .off
-            focusLenMenu.addItem(item)
+        func folder(_ title: String, _ items: [NSMenuItem]) -> NSMenuItem {
+            let sub = NSMenu()
+            sub.autoenablesItems = false
+            items.forEach { sub.addItem($0) }
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.submenu = sub
+            return item
         }
-        let focusLen = NSMenuItem(title: "专注时长", action: nil, keyEquivalent: "")
-        focusLen.submenu = focusLenMenu
-        pomoMenu.addItem(focusLen)
-
-        let restLenMenu = NSMenu()
-        for m in [5, 10] {
-            let item = NSMenuItem(title: "\(m) 分钟", action: #selector(setRestMinutes(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = m
-            item.state = m == restMinutes ? .on : .off
-            restLenMenu.addItem(item)
+        func tagged(_ title: String, _ selector: Selector, tag: Int, on: Bool) -> NSMenuItem {
+            let item = action(title, selector, on: on)
+            item.tag = tag
+            return item
         }
-        let restLen = NSMenuItem(title: "休息时长", action: nil, keyEquivalent: "")
-        restLen.submenu = restLenMenu
-        pomoMenu.addItem(restLen)
 
-        let pomoItem = NSMenuItem(title: "番茄钟", action: nil, keyEquivalent: "")
-        pomoItem.submenu = pomoMenu
-        menu.addItem(pomoItem)
-
-        // 久坐提醒
-        let stretchMenu = NSMenu()
-        for (minutes, title) in [(0, "关闭"), (30, "每 30 分钟"), (45, "每 45 分钟"), (60, "每 60 分钟")] {
-            let item = NSMenuItem(title: title, action: #selector(setStretch(_:)), keyEquivalent: "")
-            item.target = self
-            item.tag = minutes
-            item.state = minutes == stretchMinutes ? .on : .off
-            stretchMenu.addItem(item)
-        }
-        let stretchItem = NSMenuItem(title: "久坐提醒", action: nil, keyEquivalent: "")
-        stretchItem.submenu = stretchMenu
-        menu.addItem(stretchItem)
+        // 常用：直接点
+        menu.addItem(action(chatInput?.isVisible == true ? "关闭对话框" : "打开对话框", #selector(toggleChatAction)))
+        menu.addItem(action("截图识字（\(ScreenHotKey.ocrLabel)）", #selector(captureOCRAction)))
+        menu.addItem(action(config.configured
+                                ? "截图翻译（\(ScreenHotKey.translateLabel)）"
+                                : "截图翻译（\(ScreenHotKey.translateLabel)）· 需先连接大模型",
+                            #selector(captureTranslateAction)))
+        menu.addItem(action("查看上次识别结果", #selector(showLastResult), enabled: !lastResultText.isEmpty))
+        menu.addItem(.separator())
 
         // 剪贴板
-        let clipMenu = NSMenu()
-        let hintItem = NSMenuItem(title: "\(ClipboardHotKey.label) 快速呼出", action: nil, keyEquivalent: "")
-        hintItem.isEnabled = false
-        clipMenu.addItem(hintItem)
-        clipMenu.addItem(.separator())
+        var clipItemsMenu = [note("\(ClipboardHotKey.label) 快速呼出"), .separator()]
         if clipItems.isEmpty {
-            let empty = NSMenuItem(title: "（还没有记录）", action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            clipMenu.addItem(empty)
+            clipItemsMenu.append(note("（还没有记录）"))
         } else {
             for entry in clipItems.prefix(10) {
-                let item = NSMenuItem(title: entry.title,
-                                      action: #selector(copyClipItem(_:)), keyEquivalent: "")
-                item.target = self
+                let item = action(entry.title, #selector(copyClipItem(_:)))
                 item.representedObject = entry
                 if !entry.isImage { item.toolTip = String(entry.text.prefix(300)) }
-                clipMenu.addItem(item)
+                clipItemsMenu.append(item)
             }
         }
-        clipMenu.addItem(.separator())
-        let record = NSMenuItem(title: "记录剪贴板", action: #selector(toggleClipboard), keyEquivalent: "")
-        record.target = self
-        record.state = clipboardEnabled ? .on : .off
-        clipMenu.addItem(record)
-        let clear = NSMenuItem(title: "清空历史", action: #selector(clearClipboard), keyEquivalent: "")
-        clear.target = self
-        clear.isEnabled = !clipItems.isEmpty
-        clipMenu.addItem(clear)
+        clipItemsMenu += [
+            .separator(),
+            action("记录剪贴板", #selector(toggleClipboard), on: clipboardEnabled),
+            action("清空历史", #selector(clearClipboard), enabled: !clipItems.isEmpty),
+        ]
+        menu.addItem(folder("剪贴板", clipItemsMenu))
 
-        let clipItem = NSMenuItem(title: "剪贴板", action: nil, keyEquivalent: "")
-        clipItem.submenu = clipMenu
-        menu.addItem(clipItem)
-
-        let stats = NSMenuItem(title: "今天被戳了 \(clickToday) 次", action: nil, keyEquivalent: "")
-        stats.isEnabled = false
-        menu.addItem(stats)
-
-        rollOverPomodoroStats()
-        let pomoStats = NSMenuItem(title: "今天专注 \(pomoCount) 个番茄 · \(pomoMinutes) 分钟",
-                                   action: nil, keyEquivalent: "")
-        pomoStats.isEnabled = false
-        menu.addItem(pomoStats)
-
-        let streakText = streakDays >= 2 ? " · 连续 \(streakDays) 天" : ""
-        let affinity = NSMenuItem(title: "好感度 \(levelSummary)\(streakText) · 认识第 \(daysKnown()) 天",
-                                  action: #selector(showAffinity), keyEquivalent: "")
-        affinity.target = self
-        menu.addItem(affinity)
-
-        menu.addItem(.separator())
-
-        let speakItem = NSMenuItem(title: "让它说句话", action: #selector(speakRandom), keyEquivalent: "")
-        speakItem.target = self
-        menu.addItem(speakItem)
-
-        let hopItem = NSMenuItem(title: "让它跳一下", action: #selector(hopNow), keyEquivalent: "")
-        hopItem.target = self
-        menu.addItem(hopItem)
-
-        let sizeMenu = NSMenu()
-        let presets: [(String, CGFloat)] = [("小", 3), ("中", 4), ("大", 5.5), ("超大", 7)]
-        for (title, cell) in presets {
-            let item = NSMenuItem(title: title, action: #selector(changeSize(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = NSNumber(value: Double(cell))
-            if abs(cell - CELL) < 0.01 { item.state = .on }
-            sizeMenu.addItem(item)
+        // 番茄钟
+        var pomoItems: [NSMenuItem] = []
+        if pomoMode != .none {
+            let remain = max(0, Int((pomoEnd - clock).rounded(.up)))
+            pomoItems += [note((pomoMode == .focus ? "专注中" : "休息中")
+                                   + String(format: " %d:%02d", remain / 60, remain % 60)),
+                          .separator()]
         }
-        let sizeItem = NSMenuItem(title: "大小", action: nil, keyEquivalent: "")
-        sizeItem.submenu = sizeMenu
-        menu.addItem(sizeItem)
+        pomoItems += [
+            action("开始专注（\(focusMinutes) 分钟）", #selector(startFocus)),
+            action("开始休息（\(restMinutes) 分钟）", #selector(startRest)),
+            action("停止", #selector(stopPomodoro), enabled: pomoMode != .none || pomoPrompt?.isVisible == true),
+            .separator(),
+            folder("专注时长", [15, 25, 50].map {
+                tagged("\($0) 分钟", #selector(setFocusMinutes(_:)), tag: $0, on: $0 == focusMinutes)
+            }),
+            folder("休息时长", [5, 10].map {
+                tagged("\($0) 分钟", #selector(setRestMinutes(_:)), tag: $0, on: $0 == restMinutes)
+            }),
+        ]
+        menu.addItem(folder("番茄钟", pomoItems))
 
-        let resetItem = NSMenuItem(title: "回到默认位置", action: #selector(resetPosition), keyEquivalent: "")
-        resetItem.target = self
-        menu.addItem(resetItem)
-
+        // 久坐提醒
+        menu.addItem(folder("久坐提醒", [(0, "关闭"), (30, "每 30 分钟"), (45, "每 45 分钟"), (60, "每 60 分钟")].map {
+            tagged($0.1, #selector(setStretch(_:)), tag: $0.0, on: $0.0 == stretchMinutes)
+        }))
         menu.addItem(.separator())
 
-        let summaryItem = NSMenuItem(title: "看看今天的小结", action: #selector(showSummary), keyEquivalent: "")
-        summaryItem.target = self
-        menu.addItem(summaryItem)
+        // 跟宠物有关的：今天的数据和逗它玩
+        rollOverPomodoroStats()
+        let streakText = streakDays >= 2 ? "连续 \(streakDays) 天 · " : ""
+        menu.addItem(folder("好感度 \(levelSummary)", [
+            action("\(streakText)认识第 \(daysKnown()) 天", #selector(showAffinity)),
+            note("今天被戳了 \(clickToday) 次"),
+            note("今天专注 \(pomoCount) 个番茄 · \(pomoMinutes) 分钟"),
+            .separator(),
+            action("看看今天的小结", #selector(showSummary)),
+            action("让它说句话", #selector(speakRandom)),
+            action("让它跳一下", #selector(hopNow)),
+        ]))
+        menu.addItem(.separator())
 
-        let soundItem = NSMenuItem(title: "音效", action: #selector(toggleSound), keyEquivalent: "")
-        soundItem.target = self
-        soundItem.state = soundEnabled ? .on : .off
-        menu.addItem(soundItem)
-
-        let clearChatItem = NSMenuItem(title: "清空聊天记忆", action: #selector(clearChatHistory), keyEquivalent: "")
-        clearChatItem.target = self
-        menu.addItem(clearChatItem)
-
-        let launchItem = NSMenuItem(title: "开机自动启动", action: #selector(toggleLaunchAtLogin), keyEquivalent: "")
-        launchItem.target = self
-        launchItem.state = launchAtLoginEnabled() ? .on : .off
-        menu.addItem(launchItem)
-
-        let settingsItem = NSMenuItem(title: "大模型设置…", action: #selector(openSettingsAction), keyEquivalent: "")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
+        // 设置
+        let targetItems = SettingsWindow.targetLanguages.enumerated().map { index, name -> NSMenuItem in
+            let value = index == 0 ? "" : name
+            let item = action(name, #selector(setTargetLanguage(_:)), on: value == config.targetLanguage)
+            item.representedObject = value
+            return item
+        }
+        let presets: [(String, CGFloat)] = [("小", 3), ("中", 4), ("大", 5.5), ("超大", 7)]
+        let sizeItems = presets.map { title, cell -> NSMenuItem in
+            let item = action(title, #selector(changeSize(_:)), on: abs(cell - CELL) < 0.01)
+            item.representedObject = NSNumber(value: Double(cell))
+            return item
+        }
+        menu.addItem(folder("设置", [
+            folder("翻译目标语言", targetItems),
+            folder("大小", sizeItems),
+            action("回到默认位置", #selector(resetPosition)),
+            .separator(),
+            action("音效", #selector(toggleSound), on: soundEnabled),
+            action("开机自动启动", #selector(toggleLaunchAtLogin), on: launchAtLoginEnabled()),
+            .separator(),
+            action("清空聊天记忆", #selector(clearChatHistory)),
+        ]))
+        // 首次配置的说明都指向这一项，留在第一层
+        menu.addItem(action("大模型设置…", #selector(openSettingsAction)))
 
         let quitItem = NSMenuItem(title: "退出蕉哥", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self

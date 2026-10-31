@@ -120,7 +120,7 @@ offers to open the settings.
 
 ### Target language
 
-Menu: **Translation target language** (right under Screenshot translate). The default is *Auto* — Chinese source becomes
+Menu → Settings → **Translation target language**. The default is *Auto* — Chinese source becomes
 English, anything else becomes Chinese. You can also pin it to Chinese / English / Japanese / Korean / French / German /
 Spanish / Russian; both translation modes respect it.
 
@@ -148,7 +148,7 @@ Polls the clipboard every 0.5 s and keeps the last 20 **text and image** entries
   ↑↓ then Enter also works. Esc or a click outside closes it. Picking puts the item back on the clipboard and returns
   focus to your previous app — just press ⌘V
 - Click the **📌** on the right of a row to pin it; pinned items are never evicted
-- The 🍌 menu lists the 5 most recent items at the top
+- 🍌 menu → Clipboard lists the 10 most recent items
 
 (⌥⌘V is "paste and match style" in many editors, hence ⌃⌥V.)
 
@@ -181,7 +181,7 @@ Anything else compatible: pick "Custom" and fill in the fields. Config and key a
 `~/Library/Application Support/JiaoGe/config.json` with mode 600.
 
 Chat history is saved locally (last 50 messages); the last 12 are sent as context with each request.
-Menu → **Clear chat memory** wipes it.
+Menu → Settings → **Clear chat memory** wipes it.
 
 ## Pomodoro, sitting reminders and proactive care
 
@@ -205,18 +205,18 @@ It also checks in on you (all configurable or disableable in the menu):
 
 > Today: poked 42 times, 3 pomodoros / 75 minutes, 12 items copied, chatted 5 times. Well done, get some rest.
 
-Silent if there was no activity. Menu → **Today's summary** shows it on demand.
+Silent if there was no activity. Menu → Affinity → **Today's summary** shows it on demand.
 
 **Sound effects**: a click tick, a chord on level-up, a chime when a pomodoro ends, a pop when a reply arrives — all
 toggleable in the menu.
 
 ## Ranks, affinity and crowns
 
-The menu shows:
+The top level of the menu shows "Affinity Lv.N rank · X/Y". Open it to see:
 
+- "K-day streak · day D of knowing each other" (click it and the pet says it out loud)
 - "Poked N times today" (resets at midnight)
 - "N pomodoros today · M minutes"
-- "Affinity Lv.N rank · X/Y · K-day streak · day D of knowing each other" (click it and the pet says it out loud)
 
 **XP**: click +1, successful chat +5, completed pomodoro +20 — **no daily caps**; the first interaction of the day gives
 +10 and more with a longer streak (capped at +50).
@@ -255,7 +255,7 @@ stretch, yawn, tilt its head, shiver, doze off), eyes following your cursor, and
 
 ## Launch at login
 
-Menu → **Launch at login** (uses `SMAppService`, requires macOS 13+).
+Menu → Settings → **Launch at login** (uses `SMAppService`, requires macOS 13+).
 
 ## Run from source
 
