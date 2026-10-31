@@ -448,8 +448,8 @@ final class BubbleView: NSView {
     var subtitle: String = "" {
         didSet { needsDisplay = true }
     }
-    /// 逐字显示时放不下就看最新的部分，平时从开头看
-    var followTail = false {
+    /// 逐字显示时：气泡已经按全文量好大小，字从左上角往下填，已经显示的字不挪位置
+    var fillFromTop = false {
         didSet { needsDisplay = true }
     }
 
@@ -468,10 +468,10 @@ final class BubbleView: NSView {
                                             attributes: attrs)
     }
 
-    /// 算气泡该多大
-    func measuredSize(maxWidth: CGFloat, maxHeight: CGFloat = 280) -> NSSize {
+    /// 算气泡该多大；sizingText 是逐字显示时最终要放下的全文
+    func measuredSize(maxWidth: CGFloat, maxHeight: CGFloat = 280, sizingText: String? = nil) -> NSSize {
         let inner = maxWidth - hPad * 2
-        let main = wrapped(text, mainAttrs, width: inner)
+        let main = wrapped(sizingText ?? text, mainAttrs, width: inner)
         let sub = wrapped(subtitle, subAttrs, width: inner)
         let subH = subtitle.isEmpty ? 0 : ceil(sub.height) + 3
         let w = max(72, min(maxWidth, ceil(max(main.width, sub.width)) + hPad * 2))
@@ -528,7 +528,7 @@ final class BubbleView: NSView {
         var attrs = mainAttrs
         var subAttrs = self.subAttrs
         // 一行以内居中，多行左对齐，读起来舒服
-        let centered = mainH <= mainFont.boundingRectForFont.height + 2
+        let centered = !fillFromTop && mainH <= mainFont.boundingRectForFont.height + 2
         let para = NSMutableParagraphStyle()
         para.alignment = centered ? .center : .left
         para.lineBreakMode = .byWordWrapping
@@ -539,12 +539,7 @@ final class BubbleView: NSView {
 
         // 太长时从顶部开始排，并且裁掉溢出的部分
         let usable = body.height - vPad * 2
-        var top: CGFloat
-        if blockH <= usable {
-            top = body.midY + blockH / 2
-        } else {
-            top = followTail ? body.minY + vPad + blockH : body.maxY - vPad
-        }
+        var top = fillFromTop || blockH > usable ? body.maxY - vPad : body.midY + blockH / 2
 
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: body.insetBy(dx: 2, dy: 4)).addClip()
@@ -555,7 +550,7 @@ final class BubbleView: NSView {
                                     attributes: attrs)
         }
         if !subtitle.isEmpty {
-            top -= mainH + 3
+            top = fillFromTop ? body.minY + vPad + subH - 3 : top - mainH - 3     // 逐字时提示固定在底部
             let rect = NSRect(x: hPad, y: top - (subH - 3), width: inner, height: subH - 3)
             (subtitle as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading],
                                         attributes: subAttrs)
@@ -591,7 +586,7 @@ final class BubbleWindow: NSWindow {
     }
 
     func show(_ text: String, subtitle: String = "", duration: TimeInterval = 2.0,
-              maxWidth: CGFloat = 240, sticky: Bool = false, followTail: Bool = false,
+              maxWidth: CGFloat = 240, maxHeight: CGFloat = 280, sticky: Bool = false, sizingText: String? = nil,
               onTap: (() -> Void)? = nil, above petWindow: NSWindow) {
         if hideItem != nil && alphaValue > 0 {
             // 换内容时不要闪一下
@@ -600,17 +595,22 @@ final class BubbleWindow: NSWindow {
         hideItem?.cancel()
         bubbleView.text = text
         bubbleView.subtitle = subtitle
-        bubbleView.followTail = followTail
+        bubbleView.fillFromTop = sizingText != nil
         bubbleView.onTap = onTap
         ignoresMouseEvents = (onTap == nil)      // 可展开的气泡要能接收点击
-        setContentSize(bubbleView.measuredSize(maxWidth: maxWidth))
+        setContentSize(bubbleView.measuredSize(maxWidth: maxWidth, maxHeight: maxHeight, sizingText: sizingText))
         follow(petWindow)
         alphaValue = 1
         orderFrontRegardless()
 
         isSticky = sticky
         guard !sticky else { return }        // 常驻模式不自动消失，等点击
+        hide(after: duration)
+    }
 
+    /// 过一会儿淡出，之前排的淡出作废
+    func hide(after duration: TimeInterval) {
+        hideItem?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             NSAnimationContext.runAnimationGroup({ ctx in
@@ -638,8 +638,15 @@ final class BubbleWindow: NSWindow {
         orderOut(nil)
     }
 
+    /// 对话框开着时气泡排在它上面，别叠在一起
+    weak var keepAbove: NSWindow?
+
     func follow(_ petWindow: NSWindow) {
         placeAbovePet(self, petWindow: petWindow)
+        if let other = keepAbove, other.isVisible, other.frame.maxY + 4 > frame.minY,
+           other.frame.minY <= frame.minY {
+            setFrameOrigin(NSPoint(x: frame.minX, y: other.frame.maxY + 4))
+        }
     }
 }
 
@@ -858,7 +865,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var chatHistory: [[String: String]] = []
     var chatTask: Task<Void, Never>?
     var chatGeneration = 0
-    var chatInFlight = false
+    var chatInFlight = false            // 从发出去到字显示完
+    var chatReceived = ""               // 已经收到的回复
+    var chatRevealed = 0                // 气泡里显示到第几个字
+    var chatRevealClock: TimeInterval = 0
+    var chatFinish: (() -> Void)?       // 接口说完了，等字走完再收尾
+    var resultShowsChat = false
     var chatInput: ChatInputWindow?
     var settingsWindow: SettingsWindow?
 
@@ -1184,6 +1196,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
+        advanceChatReveal()
+
         // 番茄钟
         if pomoMode != .none && clock >= pomoEnd { finishPomodoro() }
 
@@ -1218,7 +1232,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 // 右键点宠物是「开关面板」，交给宠物自己处理，否则会关了又开
                 if leftEdge || !onPet { panel.hide() }
             }
-            if let input = chatInput, input.isVisible, !input.frame.contains(p) {
+            if let input = chatInput, input.isVisible, !input.frame.contains(p), !onBubble {
                 input.hide()
             }
         }
@@ -1226,7 +1240,10 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 对话框 / 剪贴板面板跟着宠物走
         if window.frame != lastPetFrame {
             lastPetFrame = window.frame
-            if let input = chatInput, input.isVisible { input.follow(window) }
+            if let input = chatInput, input.isVisible {
+                input.follow(window)
+                bubble.follow(window)
+            }
             if let panel = clipPanel, panel.isVisible { panel.follow(window) }
         }
 
@@ -1489,10 +1506,10 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: 气泡与粒子
 
     func speak(_ text: String, subtitle: String = "", duration: TimeInterval = 2.0,
-               maxWidth: CGFloat = 240, sticky: Bool = false, followTail: Bool = false,
-               onTap: (() -> Void)? = nil) {
-        bubble.show(text, subtitle: subtitle, duration: duration, maxWidth: maxWidth,
-                    sticky: sticky, followTail: followTail, onTap: onTap, above: window)
+               maxWidth: CGFloat = 240, maxHeight: CGFloat = 280, sticky: Bool = false,
+               sizingText: String? = nil, onTap: (() -> Void)? = nil) {
+        bubble.show(text, subtitle: subtitle, duration: duration, maxWidth: maxWidth, maxHeight: maxHeight,
+                    sticky: sticky, sizingText: sizingText, onTap: onTap, above: window)
     }
 
     func spawnHearts() {
@@ -1874,13 +1891,14 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 主动提醒
 
-    /// 这会儿别主动开口：专注中、全屏中、番茄卡片正等你选、气泡上留着译文，或者正在逐字显示回复
+    /// 这会儿别主动开口：专注中、全屏中、番茄卡片正等你选、气泡上留着译文，或者正在聊天
     var isQuiet: Bool {
         pomoMode == .focus
             || (quietInFullScreen && fullScreenNow)
             || pomoPrompt?.isVisible == true
             || bubble.isSticky
             || chatInFlight
+            || chatInput?.isVisible == true
     }
 
     /// 蕉哥主动找你说的话都走这里（戳它、菜单反馈这类你先动手的还是直接 speak）。
@@ -2037,6 +2055,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if chatInput == nil {
             chatInput = ChatInputWindow()
             chatInput?.onSubmit = { [weak self] text in self?.sendChat(text) }
+            chatInput?.onHide = { [weak self] in self?.chatInputClosed() }
+            bubble.keepAbove = chatInput
         }
         bubble.hideNow()
         chatInput?.present(above: window)
@@ -2051,12 +2071,23 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// 对话框收起：气泡回到宠物头顶，回复再留一会儿
+    func chatInputClosed() {
+        guard bubble.isVisible, !bubble.isSticky else { return }
+        bubble.follow(window)
+        if !chatInFlight { bubble.hide(after: 15) }
+    }
+
     func sendChat(_ text: String) {
         rollOverChatDays()
         chatTask?.cancel()
         chatGeneration += 1
         let generation = chatGeneration
         chatInFlight = true
+        chatReceived = ""
+        chatRevealed = 0
+        chatRevealClock = clock
+        chatFinish = nil
         chatHistory.append(["role": "user", "content": text])
         if chatHistory.count > 50 { chatHistory.removeFirst(chatHistory.count - 50) }
         saveChatHistory()
@@ -2070,20 +2101,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         messages += chatHistory.suffix(12)
 
         var received = ""
-        var lastRender: TimeInterval = 0
         chatTask = llmChatStream(config: config, messages: messages, onDelta: { [weak self] delta in
             guard let self = self, generation == self.chatGeneration else { return }
             received += delta
-            // 气泡一秒最多刷 20 次；输入框开着时气泡会挡住它，先只收不刷
-            let now = CACurrentMediaTime()
-            guard now - lastRender >= 0.05, self.chatInput?.isVisible != true else { return }
-            let shown = Self.plainish(received)
-            guard !shown.isEmpty else { return }
-            lastRender = now
-            self.speak(shown, duration: 60, maxWidth: 300, followTail: true)
+            self.chatReceived = Self.plainish(received)
         }, completion: { [weak self] result in
             guard let self = self, generation == self.chatGeneration else { return }
-            self.chatInFlight = false
             switch result {
             case .success(let reply):
                 let clean = Self.plainish(reply.text.isEmpty ? "……" : reply.text)
@@ -2093,16 +2116,19 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.playSound("Pop", volume: 0.3)
                 self.happyEnd = self.t + 1.4
                 self.addXP(5)
-                self.showChatReply(clean)
+                self.chatReceived = clean
+                self.chatFinish = { [weak self] in self?.showChatReply(clean) }
             case .failure(let error):
                 self.playSound("Basso", volume: 0.35)
                 let partial = Self.plainish(received)
                 if partial.isEmpty {
+                    self.chatInFlight = false
                     self.speak("聊不下去了：\(error.localizedDescription)", duration: 6, maxWidth: 300)
                 } else {
-                    // 断在半路：已经看到的话留着，下一句接着聊
+                    // 断在半路：已经收到的话留着，下一句接着聊
                     self.rememberChatReply(partial)
-                    self.showChatReply(partial, note: "回复中断了")
+                    self.chatReceived = partial
+                    self.chatFinish = { [weak self] in self?.showChatReply(partial, note: "回复中断了") }
                 }
             }
         })
@@ -2114,23 +2140,73 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveChatHistory()
     }
 
-    /// 放得下就直接显示；放不下显示开头，点气泡看全文
-    func showChatReply(_ text: String, note: String = "") {
-        guard !bubble.fits(text, maxWidth: 300) else {
-            speak(text, subtitle: note, duration: 15, maxWidth: 300)
-            return
-        }
+    /// 实测 DeepSeek 不到 0.2 秒就能吐完一段话，跟着接口的节奏显示等于一下子蹦出来，所以由这里定速
+    static let chatCharsPerSecond = 30.0
+
+    /// 对话框开着时气泡排在它上面，能用的高度要扣掉
+    var chatBubbleMaxHeight: CGFloat {
+        guard let input = chatInput, input.isVisible, input.frame.minY >= window.frame.minY,
+              let screen = window.screen ?? NSScreen.main else { return 280 }
+        return max(100, min(280, screen.visibleFrame.maxY - input.frame.maxY - 8))
+    }
+
+    /// 气泡放得下多少：放不下就只留开头，超出的点开看，不把已经显示的字往上挤
+    func chatPreview(_ text: String) -> (text: String, clipped: Bool) {
+        let limit = chatBubbleMaxHeight
+        if bubble.fits(text, maxWidth: 300, maxHeight: limit) { return (text, false) }
+        // 留出一行提示的高度
         var preview = String(text.prefix(180))
-        while !bubble.fits(preview + "…", maxWidth: 300, maxHeight: 240), preview.count > 20 {
+        while !bubble.fits(preview + "…", maxWidth: 300, maxHeight: limit - 40), preview.count > 20 {
             preview = String(preview.dropLast(20))
         }
-        speak(preview + "…", subtitle: "\(note.isEmpty ? "共 \(text.count) 字" : note) · 点气泡看全文",
-              duration: 15, maxWidth: 300, onTap: { [weak self] in
-            guard let self = self else { return }
-            // 不走 showResult：聊天内容不该变成「上次识别结果」
-            if self.resultWindow == nil { self.resultWindow = ResultWindow() }
-            self.resultWindow?.present(text: text, title: "蕉哥说")
-        })
+        return (preview + "…", true)
+    }
+
+    /// 每帧调一次：按固定速度把收到的字放进气泡，气泡大小按已收到的全文算，所以字不会挪位置
+    func advanceChatReveal() {
+        guard chatInFlight, !chatReceived.isEmpty else { return }
+        if resultShowsChat, resultWindow?.isVisible == true { resultWindow?.update(text: chatReceived) }
+
+        let (preview, clipped) = chatPreview(chatReceived)
+        let step = Int((clock - chatRevealClock) * Self.chatCharsPerSecond)
+        if step > 0, chatRevealed < preview.count {
+            chatRevealed = min(preview.count, chatRevealed + step)
+            chatRevealClock += Double(step) / Self.chatCharsPerSecond   // 不足一个字的零头留到下一帧
+            speak(String(preview.prefix(chatRevealed)), subtitle: clipped ? "还在说… · 点气泡看全文" : "",
+                  duration: 60, maxWidth: 300, maxHeight: chatBubbleMaxHeight, sizingText: preview,
+                  onTap: clipped ? { [weak self] in self?.showChatFullText() } : nil)
+        } else if chatRevealed >= preview.count {
+            chatRevealClock = clock     // 字追上接口了，等新内容时不攒速度
+        }
+
+        if chatRevealed >= preview.count, let finish = chatFinish {
+            chatFinish = nil
+            chatInFlight = false
+            finish()
+        }
+    }
+
+    /// 放得下就直接显示；放不下显示开头，点气泡看全文。对话框开着时回复留到下一句
+    func showChatReply(_ text: String, note: String = "") {
+        let duration: TimeInterval = chatInput?.isVisible == true ? 600 : 15
+        let (preview, clipped) = chatPreview(text)
+        if !clipped {
+            speak(text, subtitle: note, duration: duration, maxWidth: 300, maxHeight: chatBubbleMaxHeight)
+            return
+        }
+        speak(preview, subtitle: "\(note.isEmpty ? "共 \(text.count) 字" : note) · 点气泡看全文",
+              duration: duration, maxWidth: 300, maxHeight: chatBubbleMaxHeight,
+              onTap: { [weak self] in self?.showChatFullText() })
+    }
+
+    /// 不走 showResult：聊天内容不该变成「上次识别结果」。看完回到对话框接着聊
+    func showChatFullText() {
+        let wasChatting = chatInput?.isVisible == true
+        chatInput?.hide()       // 先收：它收起时会让出焦点，放后面会把窗口的焦点也带走
+        if resultWindow == nil { resultWindow = ResultWindow() }
+        resultShowsChat = true
+        resultWindow?.present(text: chatReceived, title: "蕉哥说")
+        if wasChatting { resultWindow?.onDismiss = { [weak self] in self?.openChat() } }
     }
 
     /// 去掉简单的 Markdown 记号
@@ -2220,6 +2296,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         chatTask?.cancel()
         chatGeneration += 1
         chatInFlight = false
+        chatFinish = nil
         chatHistory.removeAll()
         saveChatHistory()
         speak("聊天记录清空了", duration: 2.5)
@@ -2795,6 +2872,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 长结果用独立窗口展示（可滚动、可选中）
     func showResult(_ text: String, title: String) {
         lastResultText = text
+        resultShowsChat = false
         if resultWindow == nil { resultWindow = ResultWindow() }
         resultWindow?.present(text: text, title: title)
     }

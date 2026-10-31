@@ -168,8 +168,12 @@ History lives in `~/Library/Application Support/JiaoGe/clipboard.json`, images i
 
 ## Chat
 
-Menu → **Open chat box** pops up an input field above the pet. Type, press Enter, and the reply streams into the bubble
-(multi-line supported). Esc closes it (right-click is taken by the clipboard).
+Menu → **Open chat box** pops up an input field above the pet. Type, press Enter, and the reply types itself out in a bubble above the input
+(multi-line supported). The input stays open so you can keep asking; press Esc, click elsewhere or press Enter on an empty
+line to close it (right-click is taken by the clipboard).
+
+If a reply is too long for the bubble, only the start is shown and already-shown text never scrolls away; click the bubble
+for the full text. Sending a new message interrupts an unfinished reply.
 
 The endpoint follows OpenAI's `/chat/completions` format, so all of these work:
 

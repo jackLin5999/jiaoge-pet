@@ -284,6 +284,7 @@ final class ChatInputView: NSView {
 
 final class ChatInputWindow: NSPanel {
     var onSubmit: ((String) -> Void)?
+    var onHide: (() -> Void)?
     private let content = ChatInputView()
     private var focusTimer: Timer?
 
@@ -317,14 +318,14 @@ final class ChatInputWindow: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
-    /// 贴在宠物头顶；上面放不下就挪到脚下
+    /// 贴在宠物头顶；上面放不下（还要给回复的气泡留点地方）就挪到脚下
     func follow(_ pet: NSWindow) {
         var x = pet.frame.midX - frame.width / 2
         var y = pet.frame.minY + PET_TOP + 2
         if let screen = pet.screen ?? NSScreen.main {
             let vf = screen.visibleFrame
             x = max(vf.minX + 6, min(x, vf.maxX - frame.width - 6))
-            if y + frame.height > vf.maxY - 6 {
+            if y + frame.height + 120 > vf.maxY - 6 {
                 y = pet.frame.minY - frame.height - 6
             }
             y = max(vf.minY + 6, min(y, vf.maxY - frame.height - 6))
@@ -335,6 +336,7 @@ final class ChatInputWindow: NSPanel {
     func present(above pet: NSWindow) {
         follow(pet)
         content.field.stringValue = ""
+        content.field.placeholderString = "跟蕉哥说点什么…"
         NSApp.activate(ignoringOtherApps: true)
         makeKeyAndOrderFront(nil)
         makeFirstResponder(content.field)
@@ -368,6 +370,7 @@ final class ChatInputWindow: NSPanel {
         focusTimer = nil
         orderOut(nil)
         NSApp.deactivate()
+        onHide?()
     }
 
     /// 点到对话框以外的地方就收起
@@ -376,10 +379,17 @@ final class ChatInputWindow: NSPanel {
         if isVisible { hide() }
     }
 
+    /// 发完不收起，方便接着问；什么都没打就回车算不聊了
     @objc private func submit() {
         let text = content.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        hide()
-        if !text.isEmpty { onSubmit?(text) }
+        guard !text.isEmpty else {
+            hide()
+            return
+        }
+        content.field.stringValue = ""
+        content.field.placeholderString = "接着说…（Esc 收起）"
+        makeFirstResponder(content.field)
+        onSubmit?(text)
     }
 
     override func cancelOperation(_ sender: Any?) {
@@ -1419,6 +1429,8 @@ final class ResultWindow: NSPanel {
     private let scroll = NSScrollView()
     private let textView = NSTextView()
     private var onCopy: (() -> Void)?
+    /// 关窗口之后要做的事（看完长回复回到对话框）
+    var onDismiss: (() -> Void)?
 
     init() {
         super.init(contentRect: NSRect(x: 0, y: 0, width: 480, height: 400),
@@ -1464,9 +1476,26 @@ final class ResultWindow: NSPanel {
         contentView = root
     }
 
+    /// 内容还在变的时候用：换文字但不动滚动位置
+    func update(text: String) {
+        guard textView.string != text else { return }
+        let origin = scroll.contentView.bounds.origin
+        textView.string = text
+        scroll.contentView.scroll(to: origin)
+        scroll.reflectScrolledClipView(scroll.contentView)
+    }
+
+    override func close() {
+        super.close()
+        let dismiss = onDismiss
+        onDismiss = nil
+        dismiss?()
+    }
+
     func present(text: String, title: String, onCopy: (() -> Void)? = nil) {
         self.title = title
         self.onCopy = onCopy
+        onDismiss = nil
         textView.string = text
         textView.scrollToBeginningOfDocument(nil)
         center()
@@ -1489,7 +1518,8 @@ final class ResultWindow: NSPanel {
     }
 
     @objc private func closeSelf() {
+        let goesBackToChat = onDismiss != nil
         close()
-        NSApp.deactivate()
+        if !goesBackToChat { NSApp.deactivate() }
     }
 }
