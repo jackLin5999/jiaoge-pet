@@ -975,9 +975,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         window.orderFrontRegardless()
 
         bubble = BubbleWindow()
-        buildStatusItem()
         startTimer()
-        loadPrefs()
+        loadPrefs()         // 要在建菜单之前：建菜单会检查日期，没读到保存的日期就会把今天的番茄数清零
+        buildStatusItem()
         setupHotKey()
 
         startNetworkMonitor()
