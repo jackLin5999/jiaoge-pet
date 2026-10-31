@@ -448,6 +448,10 @@ final class BubbleView: NSView {
     var subtitle: String = "" {
         didSet { needsDisplay = true }
     }
+    /// 逐字显示时放不下就看最新的部分，平时从开头看
+    var followTail = false {
+        didSet { needsDisplay = true }
+    }
 
     private let mainFont = NSFont.systemFont(ofSize: 13, weight: .medium)
     private let subFont = NSFont.systemFont(ofSize: 10.5, weight: .semibold)
@@ -473,6 +477,11 @@ final class BubbleView: NSView {
         let w = max(72, min(maxWidth, ceil(max(main.width, sub.width)) + hPad * 2))
         let h = max(44, min(maxHeight, ceil(main.height) + subH + vPad * 2 + 10))
         return NSSize(width: w, height: h)
+    }
+
+    /// 这段话在气泡里放不放得下（默认上限和 measuredSize 一致）
+    func fits(_ s: String, maxWidth: CGFloat, maxHeight: CGFloat = 280) -> Bool {
+        ceil(wrapped(s, mainAttrs, width: maxWidth - hPad * 2).height) + vPad * 2 + 10 <= maxHeight
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -530,7 +539,12 @@ final class BubbleView: NSView {
 
         // 太长时从顶部开始排，并且裁掉溢出的部分
         let usable = body.height - vPad * 2
-        var top = blockH > usable ? body.maxY - vPad : body.midY + blockH / 2
+        var top: CGFloat
+        if blockH <= usable {
+            top = body.midY + blockH / 2
+        } else {
+            top = followTail ? body.minY + vPad + blockH : body.maxY - vPad
+        }
 
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: body.insetBy(dx: 2, dy: 4)).addClip()
@@ -572,8 +586,12 @@ final class BubbleWindow: NSWindow {
 
     private(set) var isSticky = false
 
+    func fits(_ text: String, maxWidth: CGFloat, maxHeight: CGFloat = 280) -> Bool {
+        bubbleView.fits(text, maxWidth: maxWidth, maxHeight: maxHeight)
+    }
+
     func show(_ text: String, subtitle: String = "", duration: TimeInterval = 2.0,
-              maxWidth: CGFloat = 240, sticky: Bool = false,
+              maxWidth: CGFloat = 240, sticky: Bool = false, followTail: Bool = false,
               onTap: (() -> Void)? = nil, above petWindow: NSWindow) {
         if hideItem != nil && alphaValue > 0 {
             // 换内容时不要闪一下
@@ -582,6 +600,7 @@ final class BubbleWindow: NSWindow {
         hideItem?.cancel()
         bubbleView.text = text
         bubbleView.subtitle = subtitle
+        bubbleView.followTail = followTail
         bubbleView.onTap = onTap
         ignoresMouseEvents = (onTap == nil)      // 可展开的气泡要能接收点击
         setContentSize(bubbleView.measuredSize(maxWidth: maxWidth))
@@ -837,6 +856,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 聊天
     var config = ChatConfig()
     var chatHistory: [[String: String]] = []
+    var chatTask: Task<Void, Never>?
+    var chatGeneration = 0
+    var chatInFlight = false
     var chatInput: ChatInputWindow?
     var settingsWindow: SettingsWindow?
 
@@ -1467,9 +1489,10 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: 气泡与粒子
 
     func speak(_ text: String, subtitle: String = "", duration: TimeInterval = 2.0,
-               maxWidth: CGFloat = 240, sticky: Bool = false, onTap: (() -> Void)? = nil) {
+               maxWidth: CGFloat = 240, sticky: Bool = false, followTail: Bool = false,
+               onTap: (() -> Void)? = nil) {
         bubble.show(text, subtitle: subtitle, duration: duration, maxWidth: maxWidth,
-                    sticky: sticky, onTap: onTap, above: window)
+                    sticky: sticky, followTail: followTail, onTap: onTap, above: window)
     }
 
     func spawnHearts() {
@@ -1851,12 +1874,13 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 主动提醒
 
-    /// 这会儿别主动开口：专注中、全屏中、番茄卡片正等你选，或者气泡上留着译文
+    /// 这会儿别主动开口：专注中、全屏中、番茄卡片正等你选、气泡上留着译文，或者正在逐字显示回复
     var isQuiet: Bool {
         pomoMode == .focus
             || (quietInFullScreen && fullScreenNow)
             || pomoPrompt?.isVisible == true
             || bubble.isSticky
+            || chatInFlight
     }
 
     /// 蕉哥主动找你说的话都走这里（戳它、菜单反馈这类你先动手的还是直接 speak）。
@@ -2029,6 +2053,10 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func sendChat(_ text: String) {
         rollOverChatDays()
+        chatTask?.cancel()
+        chatGeneration += 1
+        let generation = chatGeneration
+        chatInFlight = true
         chatHistory.append(["role": "user", "content": text])
         if chatHistory.count > 50 { chatHistory.removeFirst(chatHistory.count - 50) }
         saveChatHistory()
@@ -2039,29 +2067,70 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "role": "system",
             "content": "你是一只叫蕉哥的香蕉桌宠，性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。",
         ]]
-        messages += chatHistory
+        messages += chatHistory.suffix(12)
 
-        llmChat(config: config, messages: messages) { [weak self] result in
-            guard let self = self else { return }
+        var received = ""
+        var lastRender: TimeInterval = 0
+        chatTask = llmChatStream(config: config, messages: messages, onDelta: { [weak self] delta in
+            guard let self = self, generation == self.chatGeneration else { return }
+            received += delta
+            // 气泡一秒最多刷 20 次；输入框开着时气泡会挡住它，先只收不刷
+            let now = CACurrentMediaTime()
+            guard now - lastRender >= 0.05, self.chatInput?.isVisible != true else { return }
+            let shown = Self.plainish(received)
+            guard !shown.isEmpty else { return }
+            lastRender = now
+            self.speak(shown, duration: 60, maxWidth: 300, followTail: true)
+        }, completion: { [weak self] result in
+            guard let self = self, generation == self.chatGeneration else { return }
+            self.chatInFlight = false
             switch result {
             case .success(let reply):
                 let clean = Self.plainish(reply.text.isEmpty ? "……" : reply.text)
-                self.chatHistory.append(["role": "assistant", "content": clean])
-                if self.chatHistory.count > 50 {
-                    self.chatHistory.removeFirst(self.chatHistory.count - 50)
-                }
-                self.saveChatHistory()
+                self.rememberChatReply(clean)
                 self.chatToday += 1
                 self.saveDayCounters()
                 self.playSound("Pop", volume: 0.3)
                 self.happyEnd = self.t + 1.4
                 self.addXP(5)
-                self.speak(clean, duration: 15, maxWidth: 300)
+                self.showChatReply(clean)
             case .failure(let error):
                 self.playSound("Basso", volume: 0.35)
-                self.speak("聊不下去了：\(error.localizedDescription)", duration: 6, maxWidth: 300)
+                let partial = Self.plainish(received)
+                if partial.isEmpty {
+                    self.speak("聊不下去了：\(error.localizedDescription)", duration: 6, maxWidth: 300)
+                } else {
+                    // 断在半路：已经看到的话留着，下一句接着聊
+                    self.rememberChatReply(partial)
+                    self.showChatReply(partial, note: "回复中断了")
+                }
             }
+        })
+    }
+
+    func rememberChatReply(_ text: String) {
+        chatHistory.append(["role": "assistant", "content": text])
+        if chatHistory.count > 50 { chatHistory.removeFirst(chatHistory.count - 50) }
+        saveChatHistory()
+    }
+
+    /// 放得下就直接显示；放不下显示开头，点气泡看全文
+    func showChatReply(_ text: String, note: String = "") {
+        guard !bubble.fits(text, maxWidth: 300) else {
+            speak(text, subtitle: note, duration: 15, maxWidth: 300)
+            return
         }
+        var preview = String(text.prefix(180))
+        while !bubble.fits(preview + "…", maxWidth: 300, maxHeight: 240), preview.count > 20 {
+            preview = String(preview.dropLast(20))
+        }
+        speak(preview + "…", subtitle: "\(note.isEmpty ? "共 \(text.count) 字" : note) · 点气泡看全文",
+              duration: 15, maxWidth: 300, onTap: { [weak self] in
+            guard let self = self else { return }
+            // 不走 showResult：聊天内容不该变成「上次识别结果」
+            if self.resultWindow == nil { self.resultWindow = ResultWindow() }
+            self.resultWindow?.present(text: text, title: "蕉哥说")
+        })
     }
 
     /// 去掉简单的 Markdown 记号
@@ -2082,13 +2151,15 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let v = env["JIAOGE_API_URL"] { cfg.baseURL = v }
         if let v = env["JIAOGE_MODEL"] { cfg.model = v }
         if let v = env["JIAOGE_API_KEY"] { cfg.apiKey = v }
-        llmChat(config: cfg, messages: [["role": "user", "content": text]]) { result in
+        llmChatStream(config: cfg, messages: [["role": "user", "content": text]], onDelta: { delta in
+            FileHandle.standardError.write(Data("DELTA \(delta)\n".utf8))
+        }, completion: { result in
             switch result {
             case .success(let reply): print("REPLY: \(reply.text)")
             case .failure(let error): print("ERROR: \(error.localizedDescription)")
             }
             NSApp.terminate(nil)
-        }
+        })
         DispatchQueue.main.asyncAfter(deadline: .now() + 45) { NSApp.terminate(nil) }
     }
 
@@ -2146,6 +2217,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func clearChatHistory() {
+        chatTask?.cancel()
+        chatGeneration += 1
+        chatInFlight = false
         chatHistory.removeAll()
         saveChatHistory()
         speak("聊天记录清空了", duration: 2.5)

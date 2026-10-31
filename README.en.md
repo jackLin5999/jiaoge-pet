@@ -168,7 +168,7 @@ History lives in `~/Library/Application Support/JiaoGe/clipboard.json`, images i
 
 ## Chat
 
-Menu → **Open chat box** pops up an input field above the pet. Type, press Enter, and the reply appears in the bubble
+Menu → **Open chat box** pops up an input field above the pet. Type, press Enter, and the reply streams into the bubble
 (multi-line supported). Esc closes it (right-click is taken by the clipboard).
 
 The endpoint follows OpenAI's `/chat/completions` format, so all of these work:

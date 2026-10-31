@@ -88,15 +88,12 @@ struct LLMReply {
     var truncated: Bool      // finish_reason == length，说明被 max_tokens 截断了
 }
 
-/// 按 OpenAI 的 /chat/completions 格式发一条请求，DeepSeek、通义、Kimi、智谱、硅基流动、Ollama 都吃这套
-func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 600,
-             completion: @escaping (Result<LLMReply, Error>) -> Void) {
+/// 拼一条 /chat/completions 请求，配置不全或地址不对时返回 nil
+private func chatRequest(config: ChatConfig, messages: [[String: String]], maxTokens: Int,
+                         stream: Bool) -> URLRequest? {
     var base = config.baseURL.trimmingCharacters(in: .whitespaces)
     while base.hasSuffix("/") { base.removeLast() }
-    guard config.configured, let url = URL(string: base + "/chat/completions") else {
-        completion(.failure(LLMError.notConfigured))
-        return
-    }
+    guard config.configured, let url = URL(string: base + "/chat/completions") else { return nil }
 
     var req = URLRequest(url: url)
     req.httpMethod = "POST"
@@ -104,12 +101,24 @@ func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.setValue("Bearer \(config.apiKey.trimmingCharacters(in: .whitespaces))",
                  forHTTPHeaderField: "Authorization")
-    req.httpBody = try? JSONSerialization.data(withJSONObject: [
+    var body: [String: Any] = [
         "model": config.model,
         "messages": messages,
         "temperature": 0.8,
         "max_tokens": maxTokens,
-    ])
+    ]
+    if stream { body["stream"] = true }
+    req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+    return req
+}
+
+/// 按 OpenAI 的 /chat/completions 格式发一条请求，DeepSeek、通义、Kimi、智谱、硅基流动、Ollama 都吃这套
+func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 600,
+             completion: @escaping (Result<LLMReply, Error>) -> Void) {
+    guard let req = chatRequest(config: config, messages: messages, maxTokens: maxTokens, stream: false) else {
+        completion(.failure(LLMError.notConfigured))
+        return
+    }
 
     URLSession.shared.dataTask(with: req) { data, response, error in
         let result = parseLLMResponse(data: data,
@@ -117,6 +126,80 @@ func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 
                                       error: error)
         DispatchQueue.main.async { completion(result) }
     }.resume()
+}
+
+/// 流式版的 llmChat：边生成边回调 onDelta，回调都在主线程；取消返回的 Task 后不再回调。
+/// 报错和不支持流式的服务返回的都是普通 JSON，这两种交给 parseLLMResponse。
+/// 这里的超时是「多久没收到新内容」，所以长回复不会被 40 秒掐断
+@discardableResult
+func llmChatStream(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 600,
+                   onDelta: @escaping (String) -> Void,
+                   completion: @escaping (Result<LLMReply, Error>) -> Void) -> Task<Void, Never>? {
+    guard let req = chatRequest(config: config, messages: messages, maxTokens: maxTokens, stream: true) else {
+        completion(.failure(LLMError.notConfigured))
+        return nil
+    }
+
+    return Task {
+        var text = ""
+        var finishReason: String?
+        var sawEvent = false
+        var sawDone = false
+        var plainBody = Data()
+        var status = 0
+        var outcome: Result<LLMReply, Error>?
+
+        do {
+            let (bytes, response) = try await URLSession.shared.bytes(for: req)
+            status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            for try await line in bytes.lines {
+                guard line.hasPrefix("data:") else {
+                    plainBody.append(Data((line + "\n").utf8))
+                    continue
+                }
+                sawEvent = true
+                let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                if payload == "[DONE]" {
+                    sawDone = true
+                    break
+                }
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else {
+                    continue
+                }
+                if let err = obj["error"] as? [String: Any], let msg = err["message"] as? String {
+                    throw LLMError.http(status, msg)
+                }
+                guard let choice = (obj["choices"] as? [[String: Any]])?.first else { continue }
+                if let reason = choice["finish_reason"] as? String { finishReason = reason }
+                // 只取正文，思考过程（reasoning_content）不显示
+                if let delta = (choice["delta"] as? [String: Any])?["content"] as? String, !delta.isEmpty {
+                    text += delta
+                    await MainActor.run {
+                        if !Task.isCancelled { onDelta(delta) }
+                    }
+                }
+            }
+        } catch let error as LLMError {
+            outcome = .failure(error)
+        } catch {
+            outcome = .failure(LLMError.transport(error.localizedDescription))
+        }
+
+        let result: Result<LLMReply, Error>
+        if let outcome = outcome {
+            result = outcome
+        } else if !sawEvent {
+            result = parseLLMResponse(data: plainBody, status: status, error: nil)
+        } else if sawDone || finishReason != nil {
+            result = .success(LLMReply(text: text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                       truncated: finishReason == "length"))
+        } else {
+            result = .failure(LLMError.transport("连接断了"))
+        }
+        await MainActor.run {
+            if !Task.isCancelled { completion(result) }
+        }
+    }
 }
 
 /// 直接发图片给多模态模型（OpenAI 兼容的 image_url 格式）
