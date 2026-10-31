@@ -168,7 +168,7 @@ History lives in `~/Library/Application Support/JiaoGe/clipboard.json`, images i
 
 ## Chat
 
-Menu → **Open chat box** pops up an input field above the pet. Type, press Enter, and the reply types itself out in a bubble above the input
+Menu → **Open chat box** pops up an input field above the pet. Type, press Enter, and the reply appears as it's generated, in a bubble above the input
 (multi-line supported). The input stays open so you can keep asking; press Esc, click elsewhere or press Enter on an empty
 line to close it (right-click is taken by the clipboard).
 

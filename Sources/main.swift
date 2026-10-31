@@ -448,7 +448,7 @@ final class BubbleView: NSView {
     var subtitle: String = "" {
         didSet { needsDisplay = true }
     }
-    /// 逐字显示时：气泡已经按全文量好大小，字从左上角往下填，已经显示的字不挪位置
+    /// 边生成边显示时：气泡已经定好大小，字从左上角往下填，已经显示的字不挪位置
     var fillFromTop = false {
         didSet { needsDisplay = true }
     }
@@ -468,7 +468,7 @@ final class BubbleView: NSView {
                                             attributes: attrs)
     }
 
-    /// 算气泡该多大；sizingText 是逐字显示时最终要放下的全文
+    /// 算气泡该多大；sizingText 是边生成边显示时要放下的内容
     func measuredSize(maxWidth: CGFloat, maxHeight: CGFloat = 280, sizingText: String? = nil,
                       minSize: NSSize = .zero) -> NSSize {
         let inner = maxWidth - hPad * 2
@@ -556,7 +556,7 @@ final class BubbleView: NSView {
                                     attributes: attrs)
         }
         if !subtitle.isEmpty {
-            top = fillFromTop ? body.minY + vPad + subH - 3 : top - mainH - 3     // 逐字时提示固定在底部
+            top = fillFromTop ? body.minY + vPad + subH - 3 : top - mainH - 3     // 边生成边显示时提示固定在底部
             let rect = NSRect(x: hPad, y: top - (subH - 3), width: inner, height: subH - 3)
             (subtitle as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .usesFontLeading],
                                         attributes: subAttrs)
@@ -878,8 +878,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var chatGeneration = 0
     var chatInFlight = false            // 从发出去到字显示完
     var chatReceived = ""               // 已经收到的回复
-    var chatRevealed = 0                // 气泡里显示到第几个字
-    var chatRevealClock: TimeInterval = 0
+    var chatShown = ""                  // 气泡里已经显示的内容
     var chatFirstTextClock: TimeInterval?
     var chatSizeDecided = false
     var chatReservedHeight: CGFloat = 0 // 回复还在生成时先占好的气泡高度，0 表示按全文量
@@ -2100,8 +2099,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let generation = chatGeneration
         chatInFlight = true
         chatReceived = ""
-        chatRevealed = 0
-        chatRevealClock = clock
+        chatShown = ""
         chatFirstTextClock = nil
         chatSizeDecided = false
         chatReservedHeight = 0
@@ -2159,9 +2157,6 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         saveChatHistory()
     }
 
-    /// 实测 DeepSeek 不到 0.2 秒就能吐完一段话，跟着接口的节奏显示等于一下子蹦出来，所以由这里定速
-    static let chatCharsPerSecond = 30.0
-
     /// 对话框开着时气泡排在它上面，能用的高度要扣掉
     var chatBubbleMaxHeight: CGFloat {
         guard let input = chatInput, input.isVisible, input.frame.minY >= window.frame.minY,
@@ -2181,14 +2176,13 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (preview + "…", true)
     }
 
-    /// 每帧调一次：按固定速度把收到的字放进气泡，气泡大小按已收到的全文算，所以字不会挪位置
+    /// 每帧调一次：收到多少就显示多少，不限速
     func advanceChatReveal() {
         guard chatInFlight, !chatReceived.isEmpty else { return }
 
         // 全文卡片开着：内容接到卡片里，气泡不出来挡着
         if chatReaderOpen {
             resultWindow?.update(text: chatReceived)
-            chatRevealed = chatReceived.count
             if let finish = chatFinish {
                 chatFinish = nil
                 chatInFlight = false
@@ -2202,11 +2196,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !chatSizeDecided {
             let needed = bubble.neededHeight(chatReceived, maxWidth: 300)
             guard chatFinish != nil || needed > chatBubbleMaxHeight
-                    || clock - (chatFirstTextClock ?? clock) >= 0.8 else { return }
+                    || clock - (chatFirstTextClock ?? clock) >= 0.25 else { return }
             chatSizeDecided = true
-            chatRevealClock = clock
             if chatFinish == nil {
-                chatReservedHeight = needed > 100 ? chatBubbleMaxHeight : 150     // 收到的很少说明接口慢，先占小一点
+                // 这么短的时间收到这么多还没说完，多半是长回复；收到的很少说明接口慢，先占小一点
+                chatReservedHeight = chatReceived.count >= 30 ? chatBubbleMaxHeight : 150
             }
         }
 
@@ -2216,19 +2210,15 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
            clipped || bubble.neededHeight(preview, maxWidth: 300) > chatReservedHeight {
             chatReservedHeight = chatBubbleMaxHeight
         }
-        let step = Int((clock - chatRevealClock) * Self.chatCharsPerSecond)
-        if step > 0, chatRevealed < preview.count {
-            chatRevealed = min(preview.count, chatRevealed + step)
-            chatRevealClock += Double(step) / Self.chatCharsPerSecond   // 不足一个字的零头留到下一帧
-            speak(String(preview.prefix(chatRevealed)), subtitle: clipped ? "还在说… · 点气泡看全文" : "",
+        if preview != chatShown {
+            chatShown = preview
+            speak(preview, subtitle: clipped ? "还在说… · 点气泡看全文" : "",
                   duration: 60, maxWidth: 300, maxHeight: chatBubbleMaxHeight, sizingText: preview,
                   minSize: chatBubbleMinSize,
                   onTap: clipped ? { [weak self] in self?.showChatFullText() } : nil)
-        } else if chatRevealed >= preview.count {
-            chatRevealClock = clock     // 字追上接口了，等新内容时不攒速度
         }
 
-        if chatRevealed >= preview.count, let finish = chatFinish {
+        if let finish = chatFinish {
             chatFinish = nil
             chatInFlight = false
             finish()
@@ -2241,7 +2231,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// 放得下就直接显示；放不下显示开头，点气泡看全文。对话框开着时回复留到下一句。
-    /// 大小和逐字时保持一致，说完的一刻字不跳
+    /// 大小和生成时保持一致，说完的一刻字不跳
     func showChatReply(_ text: String, note: String = "") {
         guard !chatReaderOpen else { return }
         let duration: TimeInterval = chatInput?.isVisible == true ? 600 : 15
