@@ -791,6 +791,12 @@ enum PomoMode {
     case none, focus, rest
 }
 
+/// 提问时带着的截图：只留在内存里，不写进聊天记录；模型不能看图时用识别出的文字
+struct ChatShot {
+    var png: Data?
+    var text: String
+}
+
 /// 安静时攒下来、之后再说的一句提醒
 struct HeldNudge {
     let key: String
@@ -876,6 +882,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var chatHistory: [[String: String]] = []
     var chatTask: Task<Void, Never>?
     var chatGeneration = 0
+    var chatShot: ChatShot?             // 正在问的那张截图，对话框收起就丢掉
+    var chatInputPausedForReader = false
     var chatInFlight = false            // 从发出去到字显示完
     var chatReceived = ""               // 已经收到的回复
     var chatShown = ""                  // 气泡里已经显示的内容
@@ -917,8 +925,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var lastClipPoll: TimeInterval = -10
     var clipPanel: ClipboardPanel?
     var hotKey: GlobalHotKey?
-    var ocrHotKey: GlobalHotKey?
-    var translateHotKey: GlobalHotKey?
+    var shotHotKey: GlobalHotKey?
+    var shotBar: ShotActionBar?
+    var shotCapturing = false
+    var pendingShot: URL?
+    var lastShotAction = ShotAction.ocr
     var lastPetFrame: NSRect = .zero
     var lastMouseLeft = false
     var lastMouseRight = false
@@ -1125,18 +1136,18 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 5. 全局快捷键能否注册
         var registered: [String] = []
-        for (name, code) in [("⌃⌥V", ClipboardHotKey.keyCode), ("⌃⌥O", ScreenHotKey.ocrCode),
-                             ("⌃⌥T", ScreenHotKey.translateCode)] {
+        for (name, code) in [(ClipboardHotKey.label, ClipboardHotKey.keyCode),
+                             (ScreenHotKey.label, ScreenHotKey.keyCode)] {
             if GlobalHotKey(keyCode: code, modifiers: ClipboardHotKey.modifiers) != nil {
                 registered.append(name)
             }
         }
         let others = NSWorkspace.shared.runningApplications
             .filter { $0.bundleIdentifier == Bundle.main.bundleIdentifier }.count
-        let hotKeyNote = registered.count == 3
+        let hotKeyNote = registered.count == 2
             ? ""
             : (others > 0 ? "（蕉哥已经在运行，这项必然失败，属正常）" : "（可能被别的 app 占用了）")
-        line(registered.count == 3, "全局快捷键: "
+        line(registered.count == 2, "全局快捷键: "
              + (registered.isEmpty ? "注册失败" : registered.joined(separator: " ")) + hotKeyNote)
 
         // 6. 菜单栏图标：看按钮窗口实际落在屏幕的什么位置
@@ -1241,6 +1252,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let onBubble = bubble.isVisible && bubble.frame.contains(p)
             // 按在自己身上多半是要拖它；按在气泡上是想展开；这两种都不收
             if !onPet && !onBubble { bubble.hideIfSticky() }
+            if let bar = shotBar, bar.isVisible, !bar.frame.contains(p) { bar.cancel() }
             if let panel = clipPanel, panel.isVisible, !panel.frame.contains(p) {
                 // 右键点宠物是「开关面板」，交给宠物自己处理，否则会关了又开
                 if leftEdge || !onPet { panel.hide() }
@@ -1605,11 +1617,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 常用：直接点
         menu.addItem(action(chatInput?.isVisible == true ? "关闭对话框" : "打开对话框", #selector(toggleChatAction)))
-        menu.addItem(action("截图识字（\(ScreenHotKey.ocrLabel)）", #selector(captureOCRAction)))
-        menu.addItem(action(config.configured
-                                ? "截图翻译（\(ScreenHotKey.translateLabel)）"
-                                : "截图翻译（\(ScreenHotKey.translateLabel)）· 需先连接大模型",
-                            #selector(captureTranslateAction)))
+        menu.addItem(action("截图（\(ScreenHotKey.label)）", #selector(captureAction)))
         menu.addItem(action("查看上次识别结果", #selector(showLastResult), enabled: !lastResultText.isEmpty))
         menu.addItem(.separator())
 
@@ -1743,6 +1751,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if d.object(forKey: "clipboardEnabled") != nil { clipboardEnabled = d.bool(forKey: "clipboardEnabled") }
         if d.object(forKey: "quietInFullScreen") != nil { quietInFullScreen = d.bool(forKey: "quietInFullScreen") }
         clipExcludedApps = d.dictionary(forKey: "clipExcludedApps") as? [String: String] ?? [:]
+        lastShotAction = ShotAction(rawValue: d.string(forKey: "lastShotAction") ?? "") ?? .ocr
         config = Store.read("config.json", as: ChatConfig.self) ?? ChatConfig()
         if let entries = Store.read("clipboard.json", as: [ClipEntry].self) {
             clipItems = entries
@@ -2073,7 +2082,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             bubble.keepAbove = chatInput
         }
         bubble.hideNow()
-        chatInput?.present(above: window)
+        chatInput?.present(above: window, placeholder: chatShot == nil ? "跟蕉哥说点什么…" : "问问这张图…（Esc 取消）")
     }
 
     /// 右键（或菜单）开关对话框
@@ -2087,6 +2096,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 对话框收起：气泡回到宠物头顶，回复再留一会儿
     func chatInputClosed() {
+        if !chatInputPausedForReader { chatShot = nil }
         guard bubble.isVisible, !bubble.isSticky else { return }
         bubble.follow(window)
         if !chatInFlight { bubble.hide(after: 15) }
@@ -2104,20 +2114,33 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         chatSizeDecided = false
         chatReservedHeight = 0
         chatFinish = nil
-        chatHistory.append(["role": "user", "content": text])
+        // 截图和识别出的文字都不进聊天记录，只记一下这句是在问截图
+        let shot = chatShot
+        chatHistory.append(["role": "user", "content": shot == nil ? text : "（问一张截图）\(text)"])
         if chatHistory.count > 50 { chatHistory.removeFirst(chatHistory.count - 50) }
         saveChatHistory()
 
         speak("…", duration: 60, maxWidth: 120)
 
-        var messages: [[String: String]] = [[
-            "role": "system",
-            "content": "你是一只叫蕉哥的香蕉桌宠，性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。",
-        ]]
-        messages += chatHistory.suffix(12)
+        var system = "你是一只叫蕉哥的香蕉桌宠，性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。"
+        if let shot = shot, shot.png == nil {
+            system += "\n\n用户框选了屏幕上的一块区域在问你，下面是从中识别出的文字：\n\(shot.text.prefix(6000))"
+        }
+        var messages: [[String: Any]] = [["role": "system", "content": system]]
+        messages += chatHistory.suffix(12).map { $0 as [String: Any] }
+        if let png = shot?.png {
+            // 每次追问都带上图：接口不记得之前发过什么
+            chatInput?.setPlaceholder("接着问这张图…（Esc 收起）")
+            messages[messages.count - 1]["content"] = [
+                ["type": "text", "text": text],
+                ["type": "image_url", "image_url": ["url": "data:image/png;base64," + png.base64EncodedString()]],
+            ]
+        } else if shot != nil {
+            chatInput?.setPlaceholder("接着问这张图…（Esc 收起）")
+        }
 
         var received = ""
-        chatTask = llmChatStream(config: config, messages: messages, onDelta: { [weak self] delta in
+        chatTask = llmChatStream(config: config, messages: messages, maxTokens: shot == nil ? 600 : 1500, onDelta: { [weak self] delta in
             guard let self = self, generation == self.chatGeneration else { return }
             received += delta
             self.chatReceived = Self.plainish(received)
@@ -2140,7 +2163,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let partial = Self.plainish(received)
                 if partial.isEmpty {
                     self.chatInFlight = false
-                    self.speak("聊不下去了：\(error.localizedDescription)", duration: 6, maxWidth: 300)
+                    let hint = shot?.png == nil ? "" : "（这个模型可能不支持看图）"
+                    self.speak("聊不下去了：\(error.localizedDescription)\(hint)", duration: 6, maxWidth: 300)
                 } else {
                     // 断在半路：已经收到的话留着，下一句接着聊
                     self.rememberChatReply(partial)
@@ -2251,7 +2275,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 不走 showResult：聊天内容不该变成「上次识别结果」。看完回到对话框接着聊
     func showChatFullText() {
         let wasChatting = chatInput?.isVisible == true
+        chatInputPausedForReader = wasChatting      // 看完还要回来接着问这张图
         chatInput?.hide()       // 先收：它收起时会让出焦点，放后面会把窗口的焦点也带走
+        chatInputPausedForReader = false
         if resultWindow == nil { resultWindow = ResultWindow() }
         resultShowsChat = true
         bubble.hideNow()
@@ -2755,7 +2781,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: 菜单动作
 
     @objc func toggleChatAction() { toggleChat() }
-    @objc func captureOCRAction() { captureAndRecognize(translate: false) }
+    @objc func captureAction() { startScreenshot() }
 
     @objc func showAffinity() {
         happyEnd = t + 1.6
@@ -2765,7 +2791,6 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speak(days <= 1 ? "今天我们刚认识" : "我们已经认识 \(days) 天了",
               subtitle: subtitle, duration: 4)
     }
-    @objc func captureTranslateAction() { captureAndRecognize(translate: true) }
 
     @objc func setTargetLanguage(_ sender: NSMenuItem) {
         config.targetLanguage = sender.representedObject as? String ?? ""
@@ -2828,43 +2853,105 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             FileHandle.standardError.write("全局快捷键 \(ClipboardHotKey.label) 注册失败\n".data(using: .utf8)!)
         }
 
-        ocrHotKey = GlobalHotKey(keyCode: ScreenHotKey.ocrCode, modifiers: ScreenHotKey.modifiers)
-        ocrHotKey?.onPress = { [weak self] in
-            self?.captureAndRecognize(translate: false)
-        }
-        translateHotKey = GlobalHotKey(keyCode: ScreenHotKey.translateCode, modifiers: ScreenHotKey.modifiers)
-        translateHotKey?.onPress = { [weak self] in
-            self?.captureAndRecognize(translate: true)
-        }
-        if ocrHotKey == nil {
-        }
-        if translateHotKey == nil {
+        shotHotKey = GlobalHotKey(keyCode: ScreenHotKey.keyCode, modifiers: ScreenHotKey.modifiers)
+        shotHotKey?.onPress = { [weak self] in self?.startScreenshot() }
+        if shotHotKey == nil {
+            FileHandle.standardError.write("全局快捷键 \(ScreenHotKey.label) 注册失败\n".data(using: .utf8)!)
         }
     }
 
-    // MARK: 截图识字 / 翻译
+    // MARK: 截图：框选完再选识字、翻译还是提问
 
-    func captureAndRecognize(translate: Bool) {
-        if translate && !config.configured {
+    func startScreenshot() {
+        guard !shotCapturing else { return }
+        shotBar?.cancel()
+        shotCapturing = true
+        bubble.hideNow()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let (url, error) = ScreenText.captureRegion()
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.shotCapturing = false
+                guard let url = url else {
+                    let hint = error.isEmpty ? "" : String(error.prefix(80))
+                    guard !hint.isEmpty else { return }   // 用户按了 Esc
+                    self.speak("截不到图：\(hint)", subtitle: "看看屏幕录制权限", duration: 6, maxWidth: 300)
+                    return
+                }
+                self.showShotBar(url)
+            }
+        }
+    }
+
+    func showShotBar(_ url: URL) {
+        if shotBar == nil { shotBar = ShotActionBar() }
+        pendingShot = url
+        shotBar?.present(near: NSEvent.mouseLocation, preferred: lastShotAction, modelReady: config.configured,
+                         onChoose: { [weak self] action in
+            self?.performShot(action, url)
+        }, onCancel: { [weak self] in
+            self?.pendingShot = nil
+            try? FileManager.default.removeItem(at: url)
+        })
+    }
+
+    func performShot(_ action: ShotAction, _ url: URL) {
+        pendingShot = nil
+        if action != .ocr && !config.configured {
+            try? FileManager.default.removeItem(at: url)
             playSound("Basso", volume: 0.35)
-            speak("翻译要先连接大模型", subtitle: "这就帮你打开设置 →", duration: 5, maxWidth: 280)
+            speak("\(action.title)要先连接大模型", subtitle: "这就帮你打开设置 →", duration: 5, maxWidth: 280)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 self?.openSettings()
             }
             return
         }
-        bubble.hideNow()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let (url, error) = ScreenText.captureRegion()
-            guard let url = url else {
-                let hint = error.isEmpty ? "" : String(error.prefix(80))
-                DispatchQueue.main.async {
-                    guard !hint.isEmpty else { return }   // 用户按了 Esc
-                    self?.speak("截不到图：\(hint)", subtitle: "看看屏幕录制权限", duration: 6, maxWidth: 300)
-                }
+        lastShotAction = action
+        UserDefaults.standard.set(action.rawValue, forKey: "lastShotAction")
+        switch action {
+        case .ocr: recognizeShot(url, translate: false)
+        case .translate: recognizeShot(url, translate: true)
+        case .ask: askAboutShot(url)
+        }
+    }
+
+    /// 打开对话框问这张图。能看图的模型直接发图，不能看图的先在本地识别成文字
+    func askAboutShot(_ url: URL) {
+        if config.vision {
+            let data = (try? Data(contentsOf: url)) ?? Data()
+            try? FileManager.default.removeItem(at: url)
+            guard !data.isEmpty else {
+                speak("截图读不出来", duration: 3)
                 return
             }
+            startAsking(ChatShot(png: data, text: ""), subtitle: "📷 模型会直接看这张图")
+            return
+        }
+        speak("先看看图里写了啥…", duration: 120, maxWidth: 200)   // 系统第一次加载识别模型可能要几十秒
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let text = ScreenText.recognize(url).trimmingCharacters(in: .whitespacesAndNewlines)
+            try? FileManager.default.removeItem(at: url)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard !text.isEmpty else {
+                    self.speak("这块没认出文字", subtitle: "模型能看图的话，去设置里勾上「这个模型能看图」", duration: 6, maxWidth: 320)
+                    return
+                }
+                self.startAsking(ChatShot(png: nil, text: text), subtitle: "📷 识别出 \(text.count) 字，发给模型的是文字")
+            }
+        }
+    }
 
+    func startAsking(_ shot: ChatShot, subtitle: String) {
+        chatShot = shot
+        openChat()
+        speak("框好了，想问什么？", subtitle: subtitle, duration: 600, maxWidth: 300)
+    }
+
+    /// 识字或翻译一张已经框好的截图
+    func recognizeShot(_ url: URL, translate: Bool) {
+        bubble.hideNow()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // 模型能看图的话，翻译直接发原图，不做本地识别
             if translate, self?.config.vision == true {
                 let data = (try? Data(contentsOf: url)) ?? Data()

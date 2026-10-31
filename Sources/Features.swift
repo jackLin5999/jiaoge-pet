@@ -89,7 +89,7 @@ struct LLMReply {
 }
 
 /// 拼一条 /chat/completions 请求，配置不全或地址不对时返回 nil
-private func chatRequest(config: ChatConfig, messages: [[String: String]], maxTokens: Int,
+private func chatRequest(config: ChatConfig, messages: [[String: Any]], maxTokens: Int,
                          stream: Bool) -> URLRequest? {
     var base = config.baseURL.trimmingCharacters(in: .whitespaces)
     while base.hasSuffix("/") { base.removeLast() }
@@ -132,7 +132,7 @@ func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 
 /// 报错和不支持流式的服务返回的都是普通 JSON，这两种交给 parseLLMResponse。
 /// 这里的超时是「多久没收到新内容」，所以长回复不会被 40 秒掐断
 @discardableResult
-func llmChatStream(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 600,
+func llmChatStream(config: ChatConfig, messages: [[String: Any]], maxTokens: Int = 600,
                    onDelta: @escaping (String) -> Void,
                    completion: @escaping (Result<LLMReply, Error>) -> Void) -> Task<Void, Never>? {
     guard let req = chatRequest(config: config, messages: messages, maxTokens: maxTokens, stream: true) else {
@@ -333,10 +333,14 @@ final class ChatInputWindow: NSPanel {
         setFrameOrigin(NSPoint(x: x, y: y))
     }
 
-    func present(above pet: NSWindow) {
+    func setPlaceholder(_ text: String) {
+        content.field.placeholderString = text
+    }
+
+    func present(above pet: NSWindow, placeholder: String = "跟蕉哥说点什么…") {
         follow(pet)
         content.field.stringValue = ""
-        content.field.placeholderString = "跟蕉哥说点什么…"
+        content.field.placeholderString = placeholder
         NSApp.activate(ignoringOtherApps: true)
         makeKeyAndOrderFront(nil)
         makeFirstResponder(content.field)
@@ -1042,19 +1046,178 @@ final class GlobalHotKey {
 
 /// 呼出剪贴板面板的全局快捷键：⌃⌥V/// 呼出剪贴板面板的全局快捷键：⌃⌥V
 /// （没用 ⌥⌘V 是因为它在不少编辑器里是「粘贴并匹配样式」）
-/// 截图识字的快捷键
+/// 截图的快捷键：框选完再选识字、翻译还是提问
 enum ScreenHotKey {
-    static let ocrCode = kVK_ANSI_O
-    static let translateCode = kVK_ANSI_T
+    static let keyCode = kVK_ANSI_S
     static let modifiers = controlKey | optionKey
-    static let ocrLabel = "⌃⌥O"
-    static let translateLabel = "⌃⌥T"
+    static let label = "⌃⌥S"
 }
 
 enum ClipboardHotKey {
     static let keyCode = kVK_ANSI_V
     static let modifiers = controlKey | optionKey
     static let label = "⌃⌥V"
+}
+
+// MARK: - 截图后选择要做什么
+
+enum ShotAction: String, CaseIterable {
+    case ocr, translate, ask
+
+    var title: String {
+        switch self {
+        case .ocr: return "识字"
+        case .translate: return "翻译"
+        case .ask: return "提问"
+        }
+    }
+}
+
+/// 没激活的面板上，第一下点击也要算数
+final class FirstClickButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// 框选完在鼠标旁边弹的小工具条。不抢焦点，你原来的 app 光标还在；
+/// 按键用临时注册的全局键接收，收起就注销，平时不占数字键
+final class ShotActionBar: NSPanel {
+    private static let buttonWidth: CGFloat = 92
+    private static let height: CGFloat = 44
+
+    private var buttons: [FirstClickButton] = []
+    private var keys: [GlobalHotKey] = []
+    private var onChoose: ((ShotAction) -> Void)?
+    private var onCancel: (() -> Void)?
+    private var autoCancel: DispatchWorkItem?
+    private var preferred = ShotAction.ocr
+
+    init() {
+        let width = Self.buttonWidth * CGFloat(ShotAction.allCases.count) + 12
+        super.init(contentRect: NSRect(x: 0, y: 0, width: width, height: Self.height),
+                   styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
+        level = .floating
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        isReleasedWhenClosed = false
+
+        let card = NSView(frame: NSRect(x: 0, y: 0, width: width, height: Self.height))
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.white.cgColor
+        card.layer?.cornerRadius = 12
+        card.layer?.borderWidth = 1.5
+        card.layer?.borderColor = rgb(0xE3D3A1).cgColor
+        contentView = card
+
+        for i in ShotAction.allCases.indices {
+            let button = FirstClickButton(frame: NSRect(x: 6 + CGFloat(i) * Self.buttonWidth, y: 6,
+                                                        width: Self.buttonWidth, height: Self.height - 12))
+            button.isBordered = false
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 8
+            button.tag = i
+            button.target = self
+            button.action = #selector(tapped(_:))
+            card.addSubview(button)
+            buttons.append(button)
+        }
+    }
+
+    /// 上次用的那个高亮，回车直接重复它。没配模型时翻译和提问灰显，点了会引导去设置
+    func present(near point: NSPoint, preferred: ShotAction, modelReady: Bool, seconds: TimeInterval = 10,
+                 onChoose: @escaping (ShotAction) -> Void, onCancel: @escaping () -> Void) {
+        self.onChoose = onChoose
+        self.onCancel = onCancel
+        self.preferred = preferred
+
+        for (i, action) in ShotAction.allCases.enumerated() {
+            let button = buttons[i]
+            let usable = action == .ocr || modelReady
+            let text = NSMutableAttributedString(string: "\(i + 1) ", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: stemOutline,
+            ])
+            text.append(NSAttributedString(string: action.title, attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: usable ? ink : NSColor.tertiaryLabelColor,
+            ]))
+            if action == preferred {
+                text.append(NSAttributedString(string: " ↩", attributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: stemOutline,
+                ]))
+            }
+            button.attributedTitle = text
+            button.layer?.backgroundColor = action == preferred ? rgb(0xFBF3D6).cgColor : NSColor.clear.cgColor
+        }
+
+        // 放在鼠标右下方（松手的地方就是选区的角），靠边时往回收
+        let screen = NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
+        var x = point.x + 10
+        var y = point.y - frame.height - 10
+        if let vf = screen?.visibleFrame {
+            if x + frame.width > vf.maxX - 6 { x = point.x - frame.width - 10 }
+            if y < vf.minY + 6 { y = point.y + 10 }
+            x = max(vf.minX + 6, min(x, vf.maxX - frame.width - 6))
+            y = max(vf.minY + 6, min(y, vf.maxY - frame.height - 6))
+        }
+        setFrameOrigin(NSPoint(x: x, y: y))
+        orderFrontRegardless()
+        registerKeys()
+
+        // 一直不选也要收掉：它占着数字键和回车
+        autoCancel?.cancel()
+        let item = DispatchWorkItem { [weak self] in self?.cancel() }
+        autoCancel = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    private func registerKeys() {
+        keys = []
+        let digits = [kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3]
+        func bind(_ code: Int, _ action: @escaping () -> Void) {
+            guard let key = GlobalHotKey(keyCode: code, modifiers: 0) else { return }
+            // 收起时会注销正在触发的这个键，所以挪到下一轮再做
+            key.onPress = { DispatchQueue.main.async(execute: action) }
+            keys.append(key)
+        }
+        for (i, action) in ShotAction.allCases.enumerated() {
+            bind(digits[i]) { [weak self] in self?.choose(action) }
+        }
+        bind(kVK_Return) { [weak self] in self?.choose(self?.preferred ?? .ocr) }
+        bind(kVK_ANSI_KeypadEnter) { [weak self] in self?.choose(self?.preferred ?? .ocr) }
+        bind(kVK_Escape) { [weak self] in self?.cancel() }
+    }
+
+    private func finish() {
+        autoCancel?.cancel()
+        autoCancel = nil
+        keys = []
+        orderOut(nil)
+    }
+
+    func choose(_ action: ShotAction) {
+        let handler = onChoose
+        onChoose = nil
+        onCancel = nil
+        finish()
+        handler?(action)
+    }
+
+    func cancel() {
+        let handler = onCancel
+        onChoose = nil
+        onCancel = nil
+        finish()
+        handler?()
+    }
+
+    @objc private func tapped(_ sender: NSButton) {
+        choose(ShotAction.allCases[sender.tag])
+    }
 }
 
 // MARK: - 剪贴板面板

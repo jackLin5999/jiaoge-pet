@@ -8,8 +8,7 @@ A macOS desktop banana pet that breathes, blinks and waves — and happens to be
 
 | Feature | What it does |
 |---|---|
-| 📷 **Screenshot OCR** `⌃⌥O` | Select part of the screen and get the text. 13 languages, on-device, no network. Tables and multi-column layouts are reconstructed |
-| 🌐 **Screenshot translate** `⌃⌥T` | Select part of the screen and get a translation. Long text is chunked automatically; the bubble stays on screen until you click elsewhere |
+| 📷 **Screenshot** `⌃⌥S` | Select part of the screen, then choose **OCR**, **Translate** or **Ask**. OCR is on-device: 13 languages, tables and multi-column layouts preserved |
 | 📋 **Clipboard history** `⌃⌥V` | Remembers text and images, searchable, pinnable, one key to put it back |
 | 💬 **Chat with an LLM** | DeepSeek / Qwen / Kimi / Zhipu / OpenAI / local Ollama. History survives restarts |
 | 🍅 **Pomodoro + break reminders** | Countdown in the menu bar; it speaks up when you sit too long, forget water, or run low on battery |
@@ -58,7 +57,7 @@ After that it opens normally with no prompt.
 
 ### 4. Grant screen recording (needed for screenshots)
 
-The first time you press `⌃⌥O` or `⌃⌥T`, macOS asks for screen recording permission — allow it.
+The first time you press `⌃⌥S`, macOS asks for screen recording permission — allow it.
 **You must quit and reopen the app** before the permission takes effect.
 
 If screenshots later fail, check System Settings → Privacy & Security → Screen Recording and make sure JiaoGe is on.
@@ -93,15 +92,22 @@ Still stuck? Run the self-test and paste the output into an [issue](https://gith
 /Applications/JiaoGe.app/Contents/MacOS/JiaoGe --self-test
 ```
 
-## Screenshot OCR / translation
+## Screenshot: OCR, translate, ask
 
-- **`⌃⌥O`** — select a region (the system selection UI, Esc to cancel), text is recognized locally and copied to the clipboard
-- **`⌃⌥T`** — same selection, then the text is sent to your LLM for translation; the result goes to the clipboard and is shown in a bubble
+Press **`⌃⌥S`** and select a region (the system selection UI, Esc to cancel). A small toolbar appears next to the pointer:
 
-Recognition runs on-device via Apple's Vision framework, **no network involved**; only the translation step calls the API.
+- **1 OCR** — text is recognized locally and copied to the clipboard (and kept in clipboard history)
+- **2 Translate** — sent to your LLM; the translation goes to the clipboard and appears in the bubble
+- **3 Ask** — opens the chat box so you can ask about what you selected, with follow-ups until you close it
+
+Use the number keys or click. **Return repeats your last choice**; Esc or clicking elsewhere cancels, and it cancels by itself after 10 seconds. The toolbar doesn't take focus, so your cursor stays in your app.
+
+Recognition runs on-device via Apple's Vision framework, **no network involved**; only Translate and Ask call the API, so configure a model first.
+
+**What Ask sends**: with "this model can see images" enabled, the whole screenshot; otherwise the locally recognized text (so images without text can't be asked about). Neither is saved to chat history, and each follow-up sends it again, which costs more tokens with images.
 
 **Long results**: the bubble shows the first ~120 characters — **click the bubble** to open a scrollable
-"Recognition result" window where you can select and copy everything. The menu also has *View last result*.
+full-text card where you can select and copy everything. The menu also has *View last result*.
 Translation results work the same way.
 
 ### Two translation modes
@@ -113,8 +119,7 @@ Translation results work the same way.
 
 Enable "this model can see images" in Model settings to use the second mode. For DeepSeek use `deepseek-flash`.
 
-Without a configured model, the "Screenshot translate" menu item is labeled *"connect a model first"* and pressing `⌃⌥T`
-offers to open the settings.
+Without a configured model, Translate and Ask are greyed out on the toolbar; choosing one tells you so and opens the settings.
 
 **The translation bubble stays on screen** until you click elsewhere. Dragging the pet moves it along instead of dismissing it.
 
