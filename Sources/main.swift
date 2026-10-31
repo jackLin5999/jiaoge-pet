@@ -620,15 +620,123 @@ final class BubbleWindow: NSWindow {
     }
 
     func follow(_ petWindow: NSWindow) {
-        let w = frame.width
-        var x = petWindow.frame.midX - w / 2
-        var y = petWindow.frame.minY + PET_TOP + 2
-        if let screen = petWindow.screen ?? NSScreen.main {
-            let vf = screen.visibleFrame
-            x = max(vf.minX + 4, min(x, vf.maxX - w - 4))
-            y = min(y, vf.maxY - frame.height - 4)
-        }
-        setFrameOrigin(NSPoint(x: x, y: y))
+        placeAbovePet(self, petWindow: petWindow)
+    }
+}
+
+/// 贴着宠物头顶摆窗口（气泡和番茄钟卡片共用）
+func placeAbovePet(_ w: NSWindow, petWindow: NSWindow) {
+    let width = w.frame.width
+    var x = petWindow.frame.midX - width / 2
+    var y = petWindow.frame.minY + PET_TOP + 2
+    if let screen = petWindow.screen ?? NSScreen.main {
+        let vf = screen.visibleFrame
+        x = max(vf.minX + 4, min(x, vf.maxX - width - 4))
+        y = min(y, vf.maxY - w.frame.height - 4)
+    }
+    w.setFrameOrigin(NSPoint(x: x, y: y))
+}
+
+/// 番茄钟到点后的选择卡片：问一句要不要开始下一段，不自动计时。
+/// 用非激活面板，弹出来不会抢走当前 App 的键盘焦点。
+final class PomoPromptPanel: NSPanel {
+    private let card = NSView()
+    private let messageLabel = NSTextField(labelWithString: "")
+    private let detailLabel = NSTextField(labelWithString: "")
+    private let actionButton = NSButton()
+    private let laterButton = NSButton()
+    private var onAction: (() -> Void)?
+    private var autoClose: DispatchWorkItem?
+
+    private static let cardWidth: CGFloat = 320
+    private static let cardHeight: CGFloat = 104
+    private static let margin: CGFloat = 12
+
+    init() {
+        super.init(contentRect: NSRect(x: 0, y: 0,
+                                       width: Self.cardWidth + Self.margin * 2,
+                                       height: Self.cardHeight + Self.margin * 2),
+                   styleMask: [.borderless, .nonactivatingPanel],
+                   backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        level = .floating
+        isFloatingPanel = true
+        hidesOnDeactivate = false
+        becomesKeyOnlyIfNeeded = true
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        isReleasedWhenClosed = false
+
+        card.frame = NSRect(x: Self.margin, y: Self.margin,
+                            width: Self.cardWidth, height: Self.cardHeight)
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.white.cgColor
+        card.layer?.cornerRadius = 12
+        card.layer?.borderWidth = 1.5
+        card.layer?.borderColor = rgb(0xE3D3A1).cgColor
+        card.layer?.shadowColor = NSColor.black.cgColor
+        card.layer?.shadowOpacity = 0.16
+        card.layer?.shadowRadius = 12
+        card.layer?.shadowOffset = CGSize(width: 0, height: -3)
+        contentView = card
+
+        messageLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        messageLabel.textColor = ink
+        messageLabel.lineBreakMode = .byTruncatingTail
+        messageLabel.frame = NSRect(x: 16, y: 63, width: Self.cardWidth - 32, height: 18)
+        card.addSubview(messageLabel)
+
+        detailLabel.font = NSFont.systemFont(ofSize: 11)
+        detailLabel.textColor = stemOutline
+        detailLabel.frame = NSRect(x: 16, y: 43, width: Self.cardWidth - 32, height: 16)
+        card.addSubview(detailLabel)
+
+        actionButton.bezelStyle = .rounded
+        actionButton.target = self
+        actionButton.action = #selector(act)
+        actionButton.frame = NSRect(x: 16, y: 10, width: 196, height: 28)
+        card.addSubview(actionButton)
+
+        laterButton.title = "稍后"
+        laterButton.bezelStyle = .rounded
+        laterButton.target = self
+        laterButton.action = #selector(later)
+        laterButton.frame = NSRect(x: 220, y: 10, width: 84, height: 28)
+        card.addSubview(laterButton)
+    }
+
+    func present(message: String, detail: String, actionTitle: String,
+                 above petWindow: NSWindow, seconds: TimeInterval = 120,
+                 onAction: @escaping () -> Void) {
+        self.onAction = onAction
+        messageLabel.stringValue = message
+        detailLabel.stringValue = detail
+        actionButton.title = actionTitle
+        autoClose?.cancel()
+        placeAbovePet(self, petWindow: petWindow)
+        orderFrontRegardless()
+
+        let item = DispatchWorkItem { [weak self] in self?.dismiss() }
+        autoClose = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    /// 直接收起，不触发按钮动作
+    func dismiss() {
+        autoClose?.cancel()
+        autoClose = nil
+        onAction = nil
+        orderOut(nil)
+    }
+
+    @objc private func act() {
+        let action = onAction
+        dismiss()
+        action?()
+    }
+
+    @objc private func later() {
+        dismiss()
     }
 }
 
@@ -694,6 +802,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var t: TimeInterval = 0
     var lastTick: TimeInterval = 0
+    /// 真实流逝的秒数。t 会被每帧限幅，系统限流时走得比现实慢，计时类逻辑必须用这个
+    var clockOrigin: TimeInterval = 0
+    var clock: TimeInterval { CACurrentMediaTime() - clockOrigin }
 
     var nextBlink: TimeInterval = 1.5
     var blinkEnd: TimeInterval = 0
@@ -724,6 +835,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 番茄钟
     var pomoMode: PomoMode = .none
     var pomoEnd: TimeInterval = 0
+    var pomoPrompt: PomoPromptPanel?
     var focusMinutes = 25
     var restMinutes = 5
     var lastStatusUpdate: TimeInterval = -10
@@ -992,6 +1104,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func startTimer() {
         lastTick = CACurrentMediaTime()
+        clockOrigin = lastTick
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             self?.tick()
         }
@@ -1001,10 +1114,16 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func tick() {
         let now = CACurrentMediaTime()
-        var dt = now - lastTick
+        let elapsed = now - lastTick
         lastTick = now
-        dt = min(dt, 0.05)
+        let dt = min(elapsed, 0.05)
         t += dt
+
+        // 睡眠或长时间挂起后把截止点整体后移：合上盖子的时间不算久坐，也不该把番茄直接跳过
+        if elapsed > 120 {
+            if pomoMode != .none { pomoEnd += elapsed }
+            if nextStretch.isFinite { nextStretch += elapsed }
+        }
 
         if t >= nextBlink {
             blinkEnd = t + 0.14
@@ -1025,10 +1144,10 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         // 番茄钟
-        if pomoMode != .none && t >= pomoEnd { finishPomodoro() }
+        if pomoMode != .none && clock >= pomoEnd { finishPomodoro() }
 
         // 久坐提醒
-        if stretchMinutes > 0 && t >= nextStretch { sedentaryReminder() }
+        if stretchMinutes > 0 && clock >= nextStretch { sedentaryReminder() }
 
         // 剪贴板（不用每帧读）
         if clipboardEnabled && t - lastClipPoll >= 0.5 {
@@ -1433,7 +1552,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let pomoMenu = NSMenu()
         if pomoMode != .none {
-            let remain = max(0, Int((pomoEnd - t).rounded(.up)))
+            let remain = max(0, Int((pomoEnd - clock).rounded(.up)))
             let running = NSMenuItem(title: (pomoMode == .focus ? "专注中" : "休息中")
                                         + String(format: " %d:%02d", remain / 60, remain % 60),
                                      action: nil, keyEquivalent: "")
@@ -1451,7 +1570,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pomoMenu.addItem(restItem)
         let stopItem = NSMenuItem(title: "停止", action: #selector(stopPomodoro), keyEquivalent: "")
         stopItem.target = self
-        stopItem.isEnabled = pomoMode != .none
+        stopItem.isEnabled = pomoMode != .none || pomoPrompt?.isVisible == true
         pomoMenu.addItem(stopItem)
         pomoMenu.addItem(.separator())
 
@@ -1665,7 +1784,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func resetStretchTimer() {
-        nextStretch = stretchMinutes > 0 ? t + Double(stretchMinutes) * 60 : .infinity
+        nextStretch = stretchMinutes > 0 ? clock + Double(stretchMinutes) * 60 : .infinity
     }
 
     static let dayFormatter: DateFormatter = {
@@ -1709,8 +1828,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func startPomodoro(_ mode: PomoMode) {
         let minutes = mode == .focus ? focusMinutes : restMinutes
+        pomoPrompt?.dismiss()
         pomoMode = mode
-        pomoEnd = t + Double(minutes) * 60
+        pomoEnd = clock + Double(minutes) * 60
         happyEnd = t + 1.4
         waveStart = t + 0.05
         speak(mode == .focus ? "专注 \(minutes) 分钟，开始！" : "休息 \(minutes) 分钟～",
@@ -1719,7 +1839,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func finishPomodoro() {
-        if pomoMode == .focus {
+        let finished = pomoMode
+        pomoMode = .none
+        pomoEnd = 0
+        updateStatusTitle(force: true)
+
+        if finished == .focus {
             idleStart = t
             idleKind = 0
             nextIdle = t + 8
@@ -1729,16 +1854,28 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             savePomodoroStats()
             addXP(20)
             playSound("Glass", volume: 0.5)
-            speak("专注结束，休息 \(restMinutes) 分钟", subtitle: "🍅 今天第 \(pomoCount) 个", duration: 4)
-            pomoMode = .rest
-            pomoEnd = t + Double(restMinutes) * 60
+            showPomodoroPrompt(for: .rest)
         } else {
             happyEnd = t + 1.4
             playSound("Ping", volume: 0.4)
-            speak("休息结束，继续吧", subtitle: "🍅 完成一个番茄", duration: 4)
-            pomoMode = .none
+            showPomodoroPrompt(for: .focus)
         }
-        updateStatusTitle(force: true)
+    }
+
+    /// 一段计时结束后不自动接着走，先问一句：开始下一段，还是先算了
+    func showPomodoroPrompt(for next: PomoMode) {
+        let panel = pomoPrompt ?? PomoPromptPanel()
+        pomoPrompt = panel
+        let minutes = next == .focus ? focusMinutes : restMinutes
+        let message = next == .rest ? "专注结束，休息一下？" : "休息结束，继续专注吗？"
+        let detail = next == .rest
+            ? "🍅 今天第 \(pomoCount) 个番茄"
+            : "🍅 已完成 \(pomoCount) 个番茄"
+        panel.present(message: message, detail: detail,
+                      actionTitle: next == .rest ? "开始休息（\(minutes) 分钟）" : "开始专注（\(minutes) 分钟）",
+                      above: window) { [weak self] in
+            self?.startPomodoro(next)
+        }
     }
 
     func updateStatusTitle(force: Bool = false) {
@@ -1748,7 +1885,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if pomoMode == .none {
             title = "🍌"
         } else {
-            let remain = max(0, Int((pomoEnd - t).rounded(.up)))
+            let remain = max(0, Int((pomoEnd - clock).rounded(.up)))
             title = String(format: "🍌 %d:%02d", remain / 60, remain % 60)
         }
         if title != lastStatusTitle {
@@ -2066,32 +2203,32 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func periodicChecks() {
         // 每 5 秒：统计连续用电脑的时长
-        if t - lastActivityCheck >= 5 {
-            let step = t - lastActivityCheck
-            lastActivityCheck = t
+        if clock - lastActivityCheck >= 5 {
+            let step = clock - lastActivityCheck
+            lastActivityCheck = clock
             if secondsSinceUserInput() < 120 {
                 activeSeconds += step
             } else {
                 activeSeconds = 0
             }
-            if activeSeconds > 90 * 60, t - lastBreakAt > 1800 {
+            if activeSeconds > 90 * 60, clock - lastBreakAt > 1800 {
                 activeSeconds = 0
-                lastBreakAt = t
+                lastBreakAt = clock
                 idleStart = t
                 idleKind = 2
                 speak("连续忙了一个半小时，起来动动", subtitle: "☕️", duration: 5)
             }
         }
-        if t - lastTimeCheck >= 30 {
-            lastTimeCheck = t
+        if clock - lastTimeCheck >= 30 {
+            lastTimeCheck = clock
             timeChecks()
         }
-        if t - lastBatteryCheck >= 300 {
-            lastBatteryCheck = t
+        if clock - lastBatteryCheck >= 300 {
+            lastBatteryCheck = clock
             batteryCheck()
         }
-        if t - lastCPUSample >= 10 {
-            lastCPUSample = t
+        if clock - lastCPUSample >= 10 {
+            lastCPUSample = clock
             cpuCheck()
         }
     }
@@ -2418,6 +2555,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func stopPomodoro() {
         pomoMode = .none
+        pomoPrompt?.dismiss()
         updateStatusTitle(force: true)
         speak("番茄钟停了")
     }

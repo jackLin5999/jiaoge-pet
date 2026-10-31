@@ -185,8 +185,9 @@ Menu → **Clear chat memory** wipes it.
 
 ## Pomodoro, sitting reminders and proactive care
 
-**Pomodoro**: menu → Pomodoro → Start focus. The remaining time shows in the menu bar (🍌 24:59). Focus ends and the
-break starts automatically, then you get a reminder when the break ends. Default 25 / 5 minutes, adjustable to 15 / 25 / 50
+**Pomodoro**: menu → Pomodoro → Start focus. The remaining time shows in the menu bar (🍌 24:59). When focus ends,
+a small card asks whether to start the break or skip it — the next segment never starts on its own; when the break
+ends it asks the same about focusing again. Default 25 / 5 minutes, adjustable to 15 / 25 / 50
 and 5 / 10.
 
 It also checks in on you (all configurable or disableable in the menu):
