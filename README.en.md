@@ -201,6 +201,11 @@ It also checks in on you (all configurable or disableable in the menu):
 - **Network up/down**: mention
 - **Greeting**: by time of day at launch; more likely to doze off after 22:00
 
+**It won't interrupt focus or full screen**: during a focus session or while any app is full screen (coding, video, slides),
+reminders are held and said together afterwards. Things that go stale, like CPU and network notices, are dropped. The
+pomodoro card still appears on time. To keep reminders on in full screen, turn off Settings → *Pause reminders in full
+screen*. Sharing your screen in a meeting app without going full screen can't be detected, so reminders still appear.
+
 **Daily summary** at 21:30, e.g.
 
 > Today: poked 42 times, 3 pomodoros / 75 minutes, 12 items copied, chatted 5 times. Well done, get some rest.

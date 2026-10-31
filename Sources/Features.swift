@@ -807,6 +807,53 @@ enum ScreenText {
     }
 }
 
+// MARK: - 全屏检测
+
+enum FullScreenDetector {
+    /// 桌面窗口的主人。看进程名不看窗口标题，标题要屏幕录制权限
+    private static let desktopOwners: Set<String> = ["Wallpaper", "Dock", "Finder"]
+
+    /// 镜像中的屏幕只算一块
+    static func activeDisplays() -> [CGRect] {
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(16, &ids, &count) == .success else { return [] }
+        return ids.prefix(Int(count))
+            .filter { CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay }
+            .map { CGDisplayBounds($0) }
+    }
+
+    /// 系统没有公开接口能问「别的 app 全屏了吗」：实测原生全屏时 presentationOptions 还是空的，
+    /// 窗口尺寸也和 Dock 隐藏时的最大化一样。可靠的差别是全屏 Space 里桌面窗口不在屏幕上。
+    /// 无边框铺满的播放器不进全屏 Space，所以另外看前台 app 有没有窗口盖满整块屏幕。
+    /// sawDesktop：本次运行见过桌面窗口才敢用这条规则，系统结构不一样时宁可照常提醒
+    static func isFullScreen(windows: [[String: Any]], displays: [CGRect], frontPID: pid_t,
+                             sawDesktop: inout Bool) -> Bool {
+        func bounds(_ window: [String: Any]) -> CGRect {
+            guard let dict = window[kCGWindowBounds as String] else { return .null }
+            return CGRect(dictionaryRepresentation: dict as! CFDictionary) ?? .null
+        }
+        func layer(_ window: [String: Any]) -> Int { window[kCGWindowLayer as String] as? Int ?? 0 }
+
+        for display in displays {
+            let desktopVisible = windows.contains {
+                layer($0) < 0
+                    && desktopOwners.contains($0[kCGWindowOwnerName as String] as? String ?? "")
+                    && bounds($0).contains(display)
+            }
+            if desktopVisible { sawDesktop = true }
+            let frontCovers = windows.contains {
+                layer($0) == 0
+                    && ($0[kCGWindowOwnerPID as String] as? pid_t) == frontPID
+                    && ($0[kCGWindowAlpha as String] as? Double ?? 1) > 0
+                    && bounds($0).contains(display)
+            }
+            if frontCovers || (!desktopVisible && sawDesktop) { return true }
+        }
+        return false
+    }
+}
+
 // MARK: - 全局快捷键
 
 import Carbon

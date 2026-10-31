@@ -754,6 +754,14 @@ enum PomoMode {
     case none, focus, rest
 }
 
+/// 安静时攒下来、之后再说的一句提醒
+struct HeldNudge {
+    let key: String
+    let text: String
+    let hasSound: Bool
+    let time: TimeInterval
+}
+
 final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let lines = [
         "嗨！", "在呢～", "戳我干嘛", "要不要写点代码？",
@@ -844,6 +852,14 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 久坐提醒
     var stretchMinutes = 45
     var nextStretch: TimeInterval = .infinity
+
+    // 主动提醒：专注和全屏时先攒着
+    var heldNudges: [HeldNudge] = []
+    var quietInFullScreen = true
+    var fullScreenNow = false
+    var fullScreenLastSeen = false
+    var sawDesktop = false
+    var lastFullScreenCheck: TimeInterval = -10
 
     // 剪贴板
     var clipboardEnabled = true
@@ -1139,7 +1155,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             idleSign = Bool.random() ? 1 : -1
             nextIdle = t + Double.random(in: 6...13)
             if kind == 3 || kind == 6, Double.random(in: 0...1) < 0.5 {
-                speak(kind == 3 ? "哈啊～" : "zZ…", duration: 1.5)
+                nudge(kind == 3 ? "哈啊～" : "zZ…", duration: 1.5)
             }
         }
 
@@ -1622,6 +1638,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .separator(),
             action("音效", #selector(toggleSound), on: soundEnabled),
             action("开机自动启动", #selector(toggleLaunchAtLogin), on: launchAtLoginEnabled()),
+            action("全屏时暂停提醒", #selector(toggleQuietInFullScreen), on: quietInFullScreen),
             .separator(),
             action("清空聊天记忆", #selector(clearChatHistory)),
         ]))
@@ -1659,6 +1676,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let v = d.object(forKey: "restMinutes") as? Int, v > 0 { restMinutes = v }
         if let v = d.object(forKey: "stretchMinutes") as? Int, v >= 0 { stretchMinutes = v }
         if d.object(forKey: "clipboardEnabled") != nil { clipboardEnabled = d.bool(forKey: "clipboardEnabled") }
+        if d.object(forKey: "quietInFullScreen") != nil { quietInFullScreen = d.bool(forKey: "quietInFullScreen") }
         config = Store.read("config.json", as: ChatConfig.self) ?? ChatConfig()
         if let entries = Store.read("clipboard.json", as: [ClipEntry].self) {
             clipItems = entries
@@ -1764,9 +1782,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             pomoCount += 1
             pomoMinutes += focusMinutes
             savePomodoroStats()
-            addXP(20)
             playSound("Glass", volume: 0.5)
-            showPomodoroPrompt(for: .rest)
+            showPomodoroPrompt(for: .rest)      // 先弹卡片再加经验，升级提示要等卡片收起才说
+            addXP(20)
         } else {
             happyEnd = t + 1.4
             playSound("Ping", volume: 0.4)
@@ -1812,10 +1830,59 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idleStart = t
         idleKind = 2
         nextIdle = t + 8
-        playSound("Ping", volume: 0.4)
-        speak(Self.stretchLines.randomElement() ?? "起来动动",
-              subtitle: "坐了 \(stretchMinutes) 分钟了", duration: 8)
+        nudge(Self.stretchLines.randomElement() ?? "起来动动",
+              subtitle: "坐了 \(stretchMinutes) 分钟了", duration: 8,
+              sound: "Ping", holdAs: "stretch")
         nextStretch = clock + Double(stretchMinutes) * 60
+    }
+
+    // MARK: 主动提醒
+
+    /// 这会儿别主动开口：专注中、全屏中、番茄卡片正等你选，或者气泡上留着译文
+    var isQuiet: Bool {
+        pomoMode == .focus
+            || (quietInFullScreen && fullScreenNow)
+            || pomoPrompt?.isVisible == true
+            || bubble.isSticky
+    }
+
+    /// 蕉哥主动找你说的话都走这里（戳它、菜单反馈这类你先动手的还是直接 speak）。
+    /// 安静时给了 holdAs 的攒到之后合并着说，同类只留最新；没给的过时就没意义，直接算了
+    func nudge(_ text: String, subtitle: String = "", duration: TimeInterval = 2.0, maxWidth: CGFloat = 240,
+               sound: String? = nil, volume: Float = 0.4, holdAs key: String? = nil) {
+        guard isQuiet else {
+            if let sound = sound { playSound(sound, volume: volume) }
+            speak(text, subtitle: subtitle, duration: duration, maxWidth: maxWidth)
+            return
+        }
+        guard let key = key else { return }
+        heldNudges.removeAll { $0.key == key }
+        heldNudges.append(HeldNudge(key: key, text: text, hasSound: sound != nil, time: clock))
+    }
+
+    /// 安静结束、气泡也空出来了，把攒的话合成一个气泡说掉。放太久的（比如全屏看了一下午）就不提了
+    func flushHeldNudges() {
+        guard !heldNudges.isEmpty, !isQuiet, !bubble.isVisible else { return }
+        let fresh = heldNudges.filter { clock - $0.time < 3600 }
+        heldNudges.removeAll()
+        guard !fresh.isEmpty else { return }
+        if fresh.contains(where: { $0.hasSound }) { playSound("Ping", volume: 0.4) }
+        speak(fresh.map { $0.text }.joined(separator: "\n"), subtitle: "刚才没打扰你",
+              duration: min(20, 6 + Double(fresh.count) * 2), maxWidth: 300)
+    }
+
+    func checkFullScreen() {
+        // 前台是自己（开着面板或对话框）时看不出别人的状态，沿用上一次
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let seen = FullScreenDetector.isFullScreen(windows: windows,
+                                                   displays: FullScreenDetector.activeDisplays(),
+                                                   frontPID: front.processIdentifier,
+                                                   sawDesktop: &sawDesktop)
+        // 连续两次一样才算数，切 Space 和调度中心的动画不算
+        if seen == fullScreenLastSeen { fullScreenNow = seen }
+        fullScreenLastSeen = seen
     }
 
     // MARK: 剪贴板
@@ -2028,6 +2095,13 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         sound.play()
     }
 
+    @objc func toggleQuietInFullScreen() {
+        quietInFullScreen.toggle()
+        UserDefaults.standard.set(quietInFullScreen, forKey: "quietInFullScreen")
+        if !quietInFullScreen { fullScreenNow = false }
+        speak(quietInFullScreen ? "全屏时我先不打扰你" : "全屏时也照常提醒")
+    }
+
     @objc func toggleSound() {
         soundEnabled.toggle()
         UserDefaults.standard.set(soundEnabled, forKey: "soundEnabled")
@@ -2104,13 +2178,13 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         let h = hourNow()
         if h >= 5 && h < 11 {
-            speak("早上好！今天也一起加油", subtitle: "🌤 早上好", duration: 3)
+            nudge("早上好！今天也一起加油", subtitle: "🌤 早上好", duration: 3)
         } else if h >= 11 && h < 14 {
-            speak("中午好，记得吃饭", subtitle: "🍚", duration: 3)
+            nudge("中午好，记得吃饭", subtitle: "🍚", duration: 3)
         } else if h >= 18 && h < 22 {
-            speak("晚上好，今天辛苦了", subtitle: "🌆", duration: 3)
+            nudge("晚上好，今天辛苦了", subtitle: "🌆", duration: 3)
         } else if h >= 22 || h < 5 {
-            speak("这么晚还不睡？", subtitle: "🌙 晚安", duration: 3)
+            nudge("这么晚还不睡？", subtitle: "🌙 晚安", duration: 3)
         }
     }
 
@@ -2129,7 +2203,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 lastBreakAt = clock
                 idleStart = t
                 idleKind = 2
-                speak("连续忙了一个半小时，起来动动", subtitle: "☕️", duration: 5)
+                nudge("连续忙了一个半小时，起来动动", subtitle: "☕️", duration: 5, holdAs: "break")
             }
         }
         if clock - lastTimeCheck >= 30 {
@@ -2144,6 +2218,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastCPUSample = clock
             cpuCheck()
         }
+        if quietInFullScreen, clock - lastFullScreenCheck >= 2 {
+            lastFullScreenCheck = clock
+            checkFullScreen()
+        }
+        flushHeldNudges()
     }
 
     func timeChecks() {
@@ -2154,14 +2233,14 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if h == 12, lastLunchDay != today {
             lastLunchDay = today
             UserDefaults.standard.set(today, forKey: "lastLunchDay")
-            speak("到饭点了，先去吃饭吧", subtitle: "🍚 午饭", duration: 4)
+            nudge("到饭点了，先去吃饭吧", subtitle: "🍚 午饭", duration: 4, holdAs: "lunch")
         }
         let minutes = Calendar.current.component(.minute, from: Date())
         if h * 60 + minutes >= 21 * 60 + 30, lastSummaryDay != today {
             lastSummaryDay = today
             UserDefaults.standard.set(today, forKey: "lastSummaryDay")
-            playSound("Glass", volume: 0.4)
-            speak(summaryText(), subtitle: "今日小结", duration: 9, maxWidth: 300)
+            nudge(summaryText(), subtitle: "今日小结", duration: 9, maxWidth: 300,
+                  sound: "Glass", holdAs: "summary")
         }
 
         if h >= 9, h <= 21 {
@@ -2169,7 +2248,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if lastWaterHour != key {
                 lastWaterHour = key
                 UserDefaults.standard.set(key, forKey: "lastWaterHour")
-                speak("喝口水吧", subtitle: "💧", duration: 3)
+                nudge("喝口水吧", subtitle: "💧", duration: 3, holdAs: "water")
             }
         }
     }
@@ -2183,11 +2262,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let state = batteryState() else { return }
         if state.charging {
             batteryLowWarned = false
+            heldNudges.removeAll { $0.key == "battery" }
             return
         }
         if state.percent <= 20, !batteryLowWarned {
             batteryLowWarned = true
-            speak("电量只剩 \(state.percent)% 了", subtitle: "🔋 记得充电", duration: 5)
+            nudge("电量只剩 \(state.percent)% 了", subtitle: "🔋 记得充电", duration: 5, holdAs: "battery")
         }
     }
 
@@ -2218,7 +2298,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastSweatAt = t
             idleStart = t
             idleKind = 5
-            speak("好热，电脑在拼命了", subtitle: "🔥 CPU", duration: 4)
+            nudge("好热，电脑在拼命了", subtitle: "🔥 CPU", duration: 4)
         }
     }
 
@@ -2256,7 +2336,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func networkChanged(_ up: Bool) {
         defer { networkWasUp = up }
         guard up != networkWasUp else { return }
-        speak(up ? "网回来了" : "网好像断了", subtitle: up ? "🌐" : "⚠️", duration: 3)
+        nudge(up ? "网回来了" : "网好像断了", subtitle: up ? "🌐" : "⚠️", duration: 3)
     }
 
     // MARK: 好感度
@@ -2361,14 +2441,13 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         happyEnd = t + 2
         spawnHearts()
-        playSound("Glass", volume: 0.45)
         let line: String
         if rankTitle != beforeRank {
             line = rankTitle == "神" ? "……你走到这里了" : "上分到\(rankTitle)了！"
         } else {
             line = Self.milestones[level] ?? "我们更熟了！"
         }
-        speak(line, subtitle: "好感度 \(levelSummary)", duration: 4)
+        nudge(line, subtitle: "好感度 \(levelSummary)", duration: 4, sound: "Glass", volume: 0.45, holdAs: "levelup")
     }
 
     /// 每天第一次互动给一点奖励，连续的天数越多给得越多
@@ -2385,7 +2464,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let bonus = min(50, 5 + streakDays * 5)
         applyXP(bonus)
         if streakDays >= 2 {
-            speak("连续第 \(streakDays) 天", subtitle: "陪伴奖励", duration: 3)
+            nudge("连续第 \(streakDays) 天", subtitle: "陪伴奖励", duration: 3, holdAs: "streak")
         }
     }
 
