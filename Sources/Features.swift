@@ -1425,64 +1425,122 @@ final class ClipboardPanel: NSPanel {
 // MARK: - 结果查看窗口
 
 /// 长文本结果（识别全文、长译文）用这个窗口看，可滚动、可选中
+/// 看长文的卡片（聊天全文、识别结果、译文）：和气泡同一套样式，浮在宠物头顶
 final class ResultWindow: NSPanel {
+    private let card = FlippedView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let copyButton = NSButton()
+    private let closeButton = NSButton()
     private let scroll = NSScrollView()
     private let textView = NSTextView()
     private var onCopy: (() -> Void)?
     /// 关窗口之后要做的事（看完长回复回到对话框）
     var onDismiss: (() -> Void)?
 
+    private static let width: CGFloat = 460
+    private static let maxHeight: CGFloat = 560
+    private static let headerHeight: CGFloat = 44
+
+    private static var bodyAttrs: [NSAttributedString.Key: Any] {
+        let para = NSMutableParagraphStyle()
+        para.lineSpacing = 5
+        para.paragraphSpacing = 8
+        return [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: ink, .paragraphStyle: para]
+    }
+
+    private static func buttonTitle(_ text: String) -> NSAttributedString {
+        NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: stemOutline,
+        ])
+    }
+
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 480, height: 400),
-                   styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        title = "识别结果"
+        super.init(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 400),
+                   styleMask: [.borderless, .resizable], backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = true
         isReleasedWhenClosed = false
         hidesOnDeactivate = false
+        isMovableByWindowBackground = true
         level = .floating
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        minSize = NSSize(width: 300, height: 100)
+        // 卡片底永远是白的，文字和选区也固定按浅色画，否则深色外观下看不清
+        appearance = NSAppearance(named: .aqua)
 
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 480, height: 400))
+        card.frame = NSRect(x: 0, y: 0, width: Self.width, height: 400)
+        card.autoresizingMask = [.width, .height]
+        card.wantsLayer = true
+        card.layer?.backgroundColor = NSColor.white.cgColor
+        card.layer?.cornerRadius = 14
+        card.layer?.borderWidth = 1.5
+        card.layer?.borderColor = rgb(0xE3D3A1).cgColor
+        card.layer?.masksToBounds = true
 
-        scroll.frame = NSRect(x: 16, y: 16, width: 448, height: 324)
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = ink
+        titleLabel.frame = NSRect(x: 20, y: 14, width: Self.width - 140, height: 18)
+        titleLabel.autoresizingMask = [.width]
+        card.addSubview(titleLabel)
+
+        copyButton.isBordered = false
+        copyButton.attributedTitle = Self.buttonTitle("复制")
+        copyButton.target = self
+        copyButton.action = #selector(copyAll)
+        copyButton.frame = NSRect(x: Self.width - 92, y: 12, width: 44, height: 22)
+        copyButton.autoresizingMask = [.minXMargin]
+        card.addSubview(copyButton)
+
+        closeButton.isBordered = false
+        closeButton.attributedTitle = Self.buttonTitle("收起")
+        closeButton.target = self
+        closeButton.action = #selector(closeSelf)
+        closeButton.keyEquivalent = "\u{1b}"
+        closeButton.toolTip = "Esc"
+        closeButton.frame = NSRect(x: Self.width - 52, y: 12, width: 44, height: 22)
+        closeButton.autoresizingMask = [.minXMargin]
+        card.addSubview(closeButton)
+
+        scroll.frame = NSRect(x: 0, y: Self.headerHeight, width: Self.width, height: 400 - Self.headerHeight - 10)
+        scroll.autoresizingMask = [.width, .height]
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
-        scroll.borderType = .bezelBorder
-        scroll.drawsBackground = true
+        scroll.scrollerStyle = .overlay
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = false
 
+        textView.frame = NSRect(origin: .zero, size: scroll.contentSize)
         textView.isEditable = false
         textView.isSelectable = true
-        textView.drawsBackground = true
-        textView.backgroundColor = .textBackgroundColor
-        textView.font = NSFont.systemFont(ofSize: 13)
-        textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 15, height: 2)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
         scroll.documentView = textView
-        root.addSubview(scroll)
+        card.addSubview(scroll)
 
-        let copy = NSButton(title: "复制全部", target: self, action: #selector(copyAll))
-        copy.frame = NSRect(x: 16, y: 352, width: 100, height: 30)
-        copy.bezelStyle = .rounded
-        root.addSubview(copy)
-
-        let close = NSButton(title: "关闭", target: self, action: #selector(closeSelf))
-        close.frame = NSRect(x: 362, y: 352, width: 102, height: 30)
-        close.bezelStyle = .rounded
-        close.keyEquivalent = "\u{1b}"
-        root.addSubview(close)
-
-        contentView = root
+        contentView = card
     }
 
-    /// 内容还在变的时候用：换文字但不动滚动位置
+    // 无边框窗口默认不能成为 key window，不写这个就没法选字和按 Esc
+    override var canBecomeKey: Bool { true }
+
+    /// 内容还在增长时用：只往后面接，已经显示的字和滚动位置都不动
     func update(text: String) {
-        guard textView.string != text else { return }
-        let origin = scroll.contentView.bounds.origin
-        textView.string = text
-        scroll.contentView.scroll(to: origin)
-        scroll.reflectScrolledClipView(scroll.contentView)
+        guard let storage = textView.textStorage, storage.string != text else { return }
+        if text.hasPrefix(storage.string) {
+            let added = String(text.dropFirst(storage.string.count))
+            storage.append(NSAttributedString(string: added, attributes: Self.bodyAttrs))
+        } else {
+            let origin = scroll.contentView.bounds.origin
+            storage.setAttributedString(NSAttributedString(string: text, attributes: Self.bodyAttrs))
+            scroll.contentView.scroll(to: origin)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
     }
 
     override func close() {
@@ -1492,13 +1550,18 @@ final class ResultWindow: NSPanel {
         dismiss?()
     }
 
-    func present(text: String, title: String, onCopy: (() -> Void)? = nil) {
+    /// growing：内容还在增长，一开始就用最大高度，之后卡片不再变大，不然字会被顶上去
+    func present(text: String, title: String, above pet: NSWindow, growing: Bool = false,
+                 onCopy: (() -> Void)? = nil) {
         self.title = title
+        titleLabel.stringValue = title
         self.onCopy = onCopy
         onDismiss = nil
-        textView.string = text
-        textView.scrollToBeginningOfDocument(nil)
-        center()
+        copyButton.attributedTitle = Self.buttonTitle("复制")
+        textView.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: Self.bodyAttrs))
+        place(above: pet, growing: growing)
+        scroll.contentView.scroll(to: .zero)        // 窗口是复用的，别留着上次翻到的位置
+        scroll.reflectScrolledClipView(scroll.contentView)
         NSApp.activate(ignoringOtherApps: true)
         makeKeyAndOrderFront(nil)
         makeFirstResponder(textView)
@@ -1509,12 +1572,38 @@ final class ResultWindow: NSPanel {
         }
     }
 
+    /// 贴在宠物头顶，高度随内容，头顶放不下就贴着屏幕上沿往下放
+    private func place(above pet: NSWindow, growing: Bool) {
+        let chrome = Self.headerHeight + 14
+        var needed = Self.maxHeight
+        if !growing, let manager = textView.layoutManager, let container = textView.textContainer {
+            container.containerSize = NSSize(width: Self.width - 2 * textView.textContainerInset.width,
+                                             height: .greatestFiniteMagnitude)
+            manager.ensureLayout(for: container)
+            needed = ceil(manager.usedRect(for: container).height) + chrome + 4
+        }
+        var height = min(Self.maxHeight, max(100, needed))
+        var x = pet.frame.midX - Self.width / 2
+        var y = pet.frame.minY + PET_TOP + 2
+        if let screen = pet.screen ?? NSScreen.main {
+            let vf = screen.visibleFrame
+            x = max(vf.minX + 8, min(x, vf.maxX - Self.width - 8))
+            height = min(height, vf.height - 16)
+            y = max(vf.minY + 8, min(y, vf.maxY - height - 8))
+        }
+        setFrame(NSRect(x: x, y: y, width: Self.width, height: height), display: true)
+    }
+
     @objc private func copyAll() {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(textView.string, forType: .string)
         onCopy?()
         NSSound(named: "Tink")?.play()
+        copyButton.attributedTitle = Self.buttonTitle("已复制")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.copyButton.attributedTitle = Self.buttonTitle("复制")
+        }
     }
 
     @objc private func closeSelf() {
