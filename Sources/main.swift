@@ -1812,8 +1812,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idleStart = t
         idleKind = 2
         nextIdle = t + 8
+        playSound("Ping", volume: 0.4)
         speak(Self.stretchLines.randomElement() ?? "起来动动",
-              subtitle: "坐了 \(stretchMinutes) 分钟了")
+              subtitle: "坐了 \(stretchMinutes) 分钟了", duration: 8)
         nextStretch = t + Double(stretchMinutes) * 60
     }
 
