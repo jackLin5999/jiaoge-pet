@@ -1222,7 +1222,48 @@ final class ShotActionBar: NSPanel {
 
 // MARK: - 剪贴板面板
 
+/// 去掉边框后系统不再给放大镜留位置，字会压在图标上，所以自己分好左右
+final class ClipSearchCell: NSSearchFieldCell {
+    private let iconWidth: CGFloat = 20
+    private let clearWidth: CGFloat = 20
+
+    override func searchButtonRect(forBounds rect: NSRect) -> NSRect {
+        NSRect(x: rect.minX, y: rect.minY, width: iconWidth, height: rect.height)
+    }
+
+    override func searchTextRect(forBounds rect: NSRect) -> NSRect {
+        NSRect(x: rect.minX + iconWidth + 2, y: rect.minY,
+               width: rect.width - iconWidth - clearWidth - 4, height: rect.height)
+    }
+
+    override func cancelButtonRect(forBounds rect: NSRect) -> NSRect {
+        NSRect(x: rect.maxX - clearWidth, y: rect.minY, width: clearWidth, height: rect.height)
+    }
+
+    // 占位文字和输入时的光标走的不是 searchTextRect，这几处也要一起让开
+    override func drawingRect(forBounds rect: NSRect) -> NSRect {
+        searchTextRect(forBounds: rect)
+    }
+
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText,
+                       delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: searchTextRect(forBounds: rect), in: controlView, editor: textObj,
+                   delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor textObj: NSText,
+                         delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: searchTextRect(forBounds: rect), in: controlView, editor: textObj,
+                     delegate: delegate, start: selStart, length: selLength)
+    }
+}
+
 final class ClipSearchField: NSSearchField {
+    override class var cellClass: AnyClass? {
+        get { ClipSearchCell.self }
+        set { }
+    }
+
     /// 搜索框为空时，数字键直接选条目；有内容时数字键正常输入
     var onDigit: ((Int) -> Void)?
 
@@ -1240,7 +1281,8 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
     var allItems: [ClipEntry] = []
     private(set) var filtered: [ClipEntry] = []
     private var thumbs: [String: NSImage] = [:]
-    var selected = 0 { didSet { needsDisplay = true } }
+    /// 当前选中的行，高亮的就是回车会选的；nil 表示还没选
+    var selected: Int? { didSet { needsDisplay = true } }
 
     var onPick: ((ClipEntry) -> Void)?
     var onCancel: (() -> Void)?
@@ -1265,6 +1307,9 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
         search.delegate = self
         search.onDigit = { [weak self] index in self?.pick(index) }
         addSubview(search)
+        addTrackingArea(NSTrackingArea(rect: .zero,
+                                       options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: nil))
     }
 
     required init?(coder: NSCoder) { fatalError("不支持") }
@@ -1289,7 +1334,9 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
         let query = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
         let matches = query.isEmpty ? allItems : allItems.filter { $0.matches(query) }
         filtered = Array(matches.prefix(10))
-        selected = min(selected, max(0, filtered.count - 1))
+        if let current = selected {
+            selected = filtered.isEmpty ? nil : min(current, filtered.count - 1)
+        }
         needsDisplay = true
     }
 
@@ -1396,7 +1443,11 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
 
     private func move(_ delta: Int) {
         guard !filtered.isEmpty else { return }
-        selected = max(0, min(filtered.count - 1, selected + delta))
+        guard let current = selected else {
+            selected = delta > 0 ? 0 : filtered.count - 1
+            return
+        }
+        selected = max(0, min(filtered.count - 1, current + delta))
     }
 
     private func pick(_ index: Int) {
@@ -1404,10 +1455,15 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
         onPick?(filtered[index])
     }
 
+    private func pickSelected() {
+        if let current = selected { pick(current) }
+    }
+
     // MARK: 搜索框的键盘
 
     func controlTextDidChange(_ obj: Notification) {
-        selected = 0
+        // 搜索时第一条就是目标，搜索词清空后回到没选的状态
+        selected = search.stringValue.trimmingCharacters(in: .whitespaces).isEmpty ? nil : 0
         applyFilter()
     }
 
@@ -1420,7 +1476,7 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
             move(-1)
             return true
         case #selector(NSResponder.insertNewline(_:)):
-            pick(selected)
+            pickSelected()
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             onCancel?()
@@ -1434,7 +1490,7 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
         switch event.keyCode {
         case 125: move(1)
         case 126: move(-1)
-        case 36, 76: pick(selected)
+        case 36, 76: pickSelected()
         case 53: onCancel?()
         default:
             if let s = event.charactersIgnoringModifiers, let n = Int(s) {
@@ -1445,6 +1501,16 @@ final class ClipboardPanelView: NSView, NSSearchFieldDelegate {
 
     override func cancelOperation(_ sender: Any?) {
         onCancel?()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = (0..<filtered.count).first { rowRect($0).contains(point) }
+        if row != selected { selected = row }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        selected = nil
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1495,8 +1561,8 @@ final class ClipboardPanel: NSPanel {
     }
 
     func present(items: [ClipEntry], above pet: NSWindow) {
+        view.selected = nil
         view.setItems(items)
-        view.selected = 0
         let rows = max(items.count, 1)
         let height = ClipboardPanelView.searchHeight + CGFloat(rows) * ClipboardPanelView.rowHeight + 30
         setContentSize(NSSize(width: ClipboardPanelView.width, height: height))
