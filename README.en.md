@@ -118,10 +118,10 @@ Translation results work the same way.
 
 | Mode | How it works | Good for |
 |---|---|---|
-| Local OCR + text translation (default) | Vision extracts text on-device, then the text is sent to the model | Works with text-only models, cheaper, faster |
-| Send the image directly (vision model) | The whole screenshot goes to the model, which reads and translates it | Tables, complex layouts and handwriting; more expensive, and the image leaves your machine |
+| Local OCR + text translation | Vision extracts text on-device, then the text is sent to the model | Works with text-only models, cheaper, faster |
+| Send the image directly (default, vision model) | The whole screenshot goes to the model, which reads and translates it | Tables, complex layouts and handwriting; more expensive, and the image leaves your machine |
 
-Enable "this model can see images" in Model settings to use the second mode. For DeepSeek use `deepseek-flash`.
+Sending the image is the default — most current models can see images (DeepSeek's `deepseek-flash` can). If your model is text-only, untick "this model can see images" in Model settings to use local OCR instead.
 
 Without a configured model, Translate and Ask are greyed out on the toolbar; choosing one tells you so and opens the settings.
 

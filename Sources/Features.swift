@@ -8,13 +8,14 @@ struct ChatConfig: Codable {
     var baseURL = "https://api.deepseek.com/v1"
     var model = "deepseek-flash"
     var apiKey = ""
-    /// 模型能不能看图：能的话截图翻译直接发图，不走 OCR
-    var vision = false
+    /// 模型能不能看图：能的话截图翻译、提问直接发图，不走本地识别。
+    /// 主流模型基本都能看图，默认打开；只认文字的模型要在设置里关掉
+    var vision = true
     /// 翻译目标语言；空字符串表示「自动」＝原文是中文就翻英文，否则翻中文
     var targetLanguage = ""
 
     init(baseURL: String = "https://api.deepseek.com/v1", model: String = "deepseek-flash",
-         apiKey: String = "", vision: Bool = false, targetLanguage: String = "") {
+         apiKey: String = "", vision: Bool = true, targetLanguage: String = "") {
         self.baseURL = baseURL
         self.model = model
         self.apiKey = apiKey
@@ -22,13 +23,13 @@ struct ChatConfig: Codable {
         self.targetLanguage = targetLanguage
     }
 
-    /// 旧配置文件里没有 vision 字段，缺了就按 false 处理
+    /// 旧配置文件里没有 vision 字段，缺了就按默认（打开）处理；存过的照原样
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         baseURL = try c.decodeIfPresent(String.self, forKey: .baseURL) ?? "https://api.deepseek.com/v1"
         model = try c.decodeIfPresent(String.self, forKey: .model) ?? "deepseek-flash"
         apiKey = try c.decodeIfPresent(String.self, forKey: .apiKey) ?? ""
-        vision = try c.decodeIfPresent(Bool.self, forKey: .vision) ?? false
+        vision = try c.decodeIfPresent(Bool.self, forKey: .vision) ?? true
         targetLanguage = try c.decodeIfPresent(String.self, forKey: .targetLanguage) ?? ""
     }
 

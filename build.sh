@@ -47,8 +47,8 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>JiaoGe</string>
     <key>CFBundleIdentifier</key><string>local.jiaoge.pet</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.3.0</string>
-    <key>CFBundleVersion</key><string>10</string>
+    <key>CFBundleShortVersionString</key><string>1.3.1</string>
+    <key>CFBundleVersion</key><string>11</string>
     <key>LSUIElement</key><true/>
     <key>NSAppTransportSecurity</key>
     <dict>

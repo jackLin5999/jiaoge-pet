@@ -2419,18 +2419,19 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         speak("…", duration: 60, maxWidth: 120)
 
-        var system = chatPersona() + "性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。"
-        if let shot = shot, shot.image == nil {
-            system += "\n\n用户框选了屏幕上的一块区域在问你，下面是从中识别出的文字：\n\(shot.text.prefix(6000))"
-        }
+        let system = chatPersona() + "性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。"
         var messages: [[String: Any]] = [["role": "system", "content": system]]
         messages += chatHistory.suffix(12).map { $0 as [String: Any] }
         if let image = shot?.image {
             // 每次追问都带上图：接口不记得之前发过什么
             chatInput?.setPlaceholder("接着问这张图…（Esc 收起）")
             messages[messages.count - 1]["content"] = [["type": "text", "text": text], imagePart(image)]
-        } else if shot != nil {
+        } else if let shot = shot {
+            // 识别出的字直接放进这句提问里。放在 system 里分量太轻：聊天记录里只要有过几次
+            // 「没收到图」的回答，模型就会接着说没收到
             chatInput?.setPlaceholder("接着问这张图…（Esc 收起）")
+            messages[messages.count - 1]["content"] =
+                "我框选了屏幕上的一块区域，下面是从中识别出的文字：\n\(shot.text.prefix(6000))\n\n我的问题：\(text)"
         }
 
         var received = ""
