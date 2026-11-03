@@ -221,6 +221,7 @@ final class PetView: NSView {
     }
 
     private func drawPet(_ ctx: CGContext) {
+        if drawSkin(ctx) { return }         // 换了外观（Skin.swift）就不画香蕉
         let p = pose
         let toView = artToView
 
@@ -427,6 +428,7 @@ final class PetView: NSView {
 
     /// 命中区域：身体、果柄、手臂、脚，各放宽一圈。
     func hitAreaContains(_ p: NSPoint) -> Bool {
+        if let hit = skinHitTest(p) { return hit }
         let q = p.applying(artToView.inverted())
         return Banana.hitShapes.contains { $0.contains(q) }
     }
@@ -1538,6 +1540,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastDrawnPose = pose
             view.needsDisplay = true
         }
+        if skinStep(pose) { view.pose = pose; lastDrawnPose = pose; view.needsDisplay = true }   // 外观的动画帧到点了
         updateClickThrough()
         setTickRate(moving ? 60 : 30)
     }
@@ -1702,6 +1705,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 参考图坐标 → 身体部位
     func bodyPart(at p: CGPoint) -> BodyPart {
+        if let part = skinBodyPart(at: p) { return part }
         for cx in Banana.eyeCenters where hypot(p.x - cx, p.y - Banana.eyeY) < 52 {
             return .eye
         }
@@ -1984,6 +1988,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .separator(),
             action("清空聊天记忆", #selector(clearChatHistory)),
         ]))
+        menu.addItem(skinMenuItem())
         // 首次配置的说明都指向这一项，留在第一层
         menu.addItem(action("大模型设置…", #selector(openSettingsAction)))
 

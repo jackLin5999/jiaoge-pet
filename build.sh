@@ -14,7 +14,7 @@ if [ -d Resources ]; then
 fi
 
 # 编译。默认只编本机架构（快）；ARCHS=universal 时编 arm64 + x86_64 再合并，供发布用
-SOURCES=(Sources/main.swift Sources/Features.swift)
+SOURCES=(Sources/main.swift Sources/Features.swift Sources/Skin.swift)
 FLAGS=(-framework AppKit -framework QuartzCore)
 ARCHS="${ARCHS:-$(uname -m)}"
 if [ "$ARCHS" = "universal" ]; then
