@@ -90,7 +90,7 @@ struct LLMReply {
 
 /// 拼一条 /chat/completions 请求，配置不全或地址不对时返回 nil
 private func chatRequest(config: ChatConfig, messages: [[String: Any]], maxTokens: Int,
-                         stream: Bool) -> URLRequest? {
+                         temperature: Double, stream: Bool) -> URLRequest? {
     var base = config.baseURL.trimmingCharacters(in: .whitespaces)
     while base.hasSuffix("/") { base.removeLast() }
     guard config.configured, let url = URL(string: base + "/chat/completions") else { return nil }
@@ -104,7 +104,7 @@ private func chatRequest(config: ChatConfig, messages: [[String: Any]], maxToken
     var body: [String: Any] = [
         "model": config.model,
         "messages": messages,
-        "temperature": 0.8,
+        "temperature": temperature,
         "max_tokens": maxTokens,
     ]
     if stream { body["stream"] = true }
@@ -113,9 +113,10 @@ private func chatRequest(config: ChatConfig, messages: [[String: Any]], maxToken
 }
 
 /// 按 OpenAI 的 /chat/completions 格式发一条请求，DeepSeek、通义、Kimi、智谱、硅基流动、Ollama 都吃这套
-func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 600,
+func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 600, temperature: Double = 0.8,
              completion: @escaping (Result<LLMReply, Error>) -> Void) {
-    guard let req = chatRequest(config: config, messages: messages, maxTokens: maxTokens, stream: false) else {
+    guard let req = chatRequest(config: config, messages: messages, maxTokens: maxTokens,
+                                temperature: temperature, stream: false) else {
         completion(.failure(LLMError.notConfigured))
         return
     }
@@ -132,10 +133,11 @@ func llmChat(config: ChatConfig, messages: [[String: String]], maxTokens: Int = 
 /// 报错和不支持流式的服务返回的都是普通 JSON，这两种交给 parseLLMResponse。
 /// 这里的超时是「多久没收到新内容」，所以长回复不会被 40 秒掐断
 @discardableResult
-func llmChatStream(config: ChatConfig, messages: [[String: Any]], maxTokens: Int = 600,
+func llmChatStream(config: ChatConfig, messages: [[String: Any]], maxTokens: Int = 600, temperature: Double = 0.8,
                    onDelta: @escaping (String) -> Void,
                    completion: @escaping (Result<LLMReply, Error>) -> Void) -> Task<Void, Never>? {
-    guard let req = chatRequest(config: config, messages: messages, maxTokens: maxTokens, stream: true) else {
+    guard let req = chatRequest(config: config, messages: messages, maxTokens: maxTokens,
+                                temperature: temperature, stream: true) else {
         completion(.failure(LLMError.notConfigured))
         return nil
     }
@@ -202,41 +204,9 @@ func llmChatStream(config: ChatConfig, messages: [[String: Any]], maxTokens: Int
     }
 }
 
-/// 直接发图片给多模态模型（OpenAI 兼容的 image_url 格式）
-func llmVision(config: ChatConfig, prompt: String, imagePNG: Data, maxTokens: Int = 2000,
-               completion: @escaping (Result<LLMReply, Error>) -> Void) {
-    var base = config.baseURL.trimmingCharacters(in: .whitespaces)
-    while base.hasSuffix("/") { base.removeLast() }
-    guard config.configured, let url = URL(string: base + "/chat/completions") else {
-        completion(.failure(LLMError.notConfigured))
-        return
-    }
-    var req = URLRequest(url: url)
-    req.httpMethod = "POST"
-    req.timeoutInterval = 60
-    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    req.setValue("Bearer \(config.apiKey.trimmingCharacters(in: .whitespaces))",
-                 forHTTPHeaderField: "Authorization")
-    let dataURL = "data:image/png;base64," + imagePNG.base64EncodedString()
-    let body: [String: Any] = [
-        "model": config.model,
-        "max_tokens": maxTokens,
-        "messages": [[
-            "role": "user",
-            "content": [
-                ["type": "text", "text": prompt],
-                ["type": "image_url", "image_url": ["url": dataURL]],
-            ],
-        ]],
-    ]
-    req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-    URLSession.shared.dataTask(with: req) { data, response, error in
-        let result = parseLLMResponse(data: data,
-                                      status: (response as? HTTPURLResponse)?.statusCode ?? 0,
-                                      error: error)
-        DispatchQueue.main.async { completion(result) }
-    }.resume()
+/// 多模态消息里的一张图（OpenAI 兼容的 image_url 格式）
+func imagePart(_ image: UploadImage) -> [String: Any] {
+    ["type": "image_url", "image_url": ["url": "data:\(image.mime);base64," + image.data.base64EncodedString()]]
 }
 
 private func parseLLMResponse(data: Data?, status: Int, error: Error?) -> Result<LLMReply, Error> {
@@ -754,6 +724,13 @@ enum CrownAssets {
 
 // MARK: - 截图识字
 
+struct UploadImage {
+    var data: Data
+    var mime: String
+    var width: Int
+    var height: Int
+}
+
 enum ScreenText {
     /// 调系统自带的框选截图（⌃⌥ 跟系统的一样，按 Esc 取消），返回临时文件路径和错误信息
     static func captureRegion() -> (url: URL?, error: String) {
@@ -776,6 +753,31 @@ enum ScreenText {
             return (nil, hint.isEmpty ? "" : hint)
         }
         return (url, "")
+    }
+
+    /// 发给模型的图：Retina 截图原尺寸很大，而各家接口收到后多半也会缩到 1500 像素上下再看，
+    /// 所以先在本地缩到长边 1600，再从 PNG 和 JPEG 里挑小的（文字截图 PNG 小，照片 JPEG 小）
+    static func uploadImage(_ url: URL, maxSide: Int = 1600) -> UploadImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: maxSide,
+              ] as CFDictionary) else { return nil }
+
+        func encode(_ type: String, _ options: [CFString: Any]) -> Data? {
+            let data = NSMutableData()
+            guard let dest = CGImageDestinationCreateWithData(data, type as CFString, 1, nil) else { return nil }
+            CGImageDestinationAddImage(dest, image, options as CFDictionary)
+            return CGImageDestinationFinalize(dest) ? data as Data : nil
+        }
+        let png = encode("public.png", [:])
+        let jpeg = encode("public.jpeg", [kCGImageDestinationLossyCompressionQuality: 0.85])
+        if let jpeg = jpeg, jpeg.count < (png?.count ?? .max) {
+            return UploadImage(data: jpeg, mime: "image/jpeg", width: image.width, height: image.height)
+        }
+        guard let png = png else { return nil }
+        return UploadImage(data: png, mime: "image/png", width: image.width, height: image.height)
     }
 
     /// 每种文字需要单独一轮：语言列表一长，识别就会被带偏
@@ -1044,19 +1046,243 @@ final class GlobalHotKey {
     }
 }
 
-/// 呼出剪贴板面板的全局快捷键：⌃⌥V/// 呼出剪贴板面板的全局快捷键：⌃⌥V
-/// （没用 ⌥⌘V 是因为它在不少编辑器里是「粘贴并匹配样式」）
-/// 截图的快捷键：框选完再选识字、翻译还是提问
-enum ScreenHotKey {
-    static let keyCode = kVK_ANSI_S
-    static let modifiers = controlKey | optionKey
-    static let label = "⌃⌥S"
+/// 一个全局快捷键：Carbon 的键码和修饰键，外加录的时候记下的键名（键码换不回字母，跟键盘布局有关）
+struct HotKeySpec: Codable, Equatable {
+    var keyCode: Int
+    var modifiers: Int
+    var key: String
+
+    /// 截图：框选完再选识字、翻译还是提问
+    static let defaultShot = HotKeySpec(keyCode: kVK_ANSI_S, modifiers: controlKey | optionKey, key: "S")
+    /// 剪贴板面板（没用 ⌥⌘V 是因为它在不少编辑器里是「粘贴并匹配样式」）
+    static let defaultClip = HotKeySpec(keyCode: kVK_ANSI_V, modifiers: controlKey | optionKey, key: "V")
+
+    /// 按系统菜单的顺序写修饰键：⌃⌥⇧⌘
+    var label: String {
+        var s = ""
+        if modifiers & controlKey != 0 { s += "⌃" }
+        if modifiers & optionKey != 0 { s += "⌥" }
+        if modifiers & shiftKey != 0 { s += "⇧" }
+        if modifiers & cmdKey != 0 { s += "⌘" }
+        return s + key
+    }
+
+    static func load(_ name: String, default fallback: HotKeySpec) -> HotKeySpec {
+        guard let data = UserDefaults.standard.data(forKey: name),
+              let spec = try? JSONDecoder().decode(HotKeySpec.self, from: data) else { return fallback }
+        return spec
+    }
+
+    func save(_ name: String) {
+        if let data = try? JSONEncoder().encode(self) { UserDefaults.standard.set(data, forKey: name) }
+    }
+
+    /// 从按键事件录一个快捷键。要带 ⌃⌥⌘ 里至少一个，否则平时打字会被吃掉；F 键可以单按
+    static func from(_ event: NSEvent) -> (spec: HotKeySpec?, problem: String) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        var mods = 0
+        if flags.contains(.control) { mods |= controlKey }
+        if flags.contains(.option) { mods |= optionKey }
+        if flags.contains(.shift) { mods |= shiftKey }
+        if flags.contains(.command) { mods |= cmdKey }
+        let code = Int(event.keyCode)
+        let named = specialKeys[code]
+        let isFunctionKey = named?.hasPrefix("F") == true
+        if mods & (controlKey | optionKey | cmdKey) == 0 && !isFunctionKey {
+            return (nil, "要带上 ⌃、⌥ 或 ⌘ 里的至少一个")
+        }
+        let key = named ?? (event.characters(byApplyingModifiers: [])?.uppercased() ?? "")
+        guard !key.trimmingCharacters(in: .whitespaces).isEmpty else { return (nil, "这个键认不出来，换一个") }
+        return (HotKeySpec(keyCode: code, modifiers: mods, key: key), "")
+    }
+
+    private static let specialKeys: [Int: String] = [
+        kVK_Space: "Space", kVK_Return: "↩", kVK_Tab: "⇥", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
+        kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
+        kVK_Home: "↖", kVK_End: "↘", kVK_PageUp: "⇞", kVK_PageDown: "⇟",
+        kVK_F1: "F1", kVK_F2: "F2", kVK_F3: "F3", kVK_F4: "F4", kVK_F5: "F5", kVK_F6: "F6",
+        kVK_F7: "F7", kVK_F8: "F8", kVK_F9: "F9", kVK_F10: "F10", kVK_F11: "F11", kVK_F12: "F12",
+        kVK_F13: "F13", kVK_F14: "F14", kVK_F15: "F15", kVK_F16: "F16", kVK_F17: "F17", kVK_F18: "F18",
+        kVK_F19: "F19", kVK_F20: "F20",
+    ]
 }
 
-enum ClipboardHotKey {
-    static let keyCode = kVK_ANSI_V
-    static let modifiers = controlKey | optionKey
-    static let label = "⌃⌥V"
+/// 改快捷键的小窗口：点一下按钮，再按想要的组合键。改不了的操作（比如 ⌥+右键）列在下面当提示
+final class HotKeyWindow: NSPanel {
+    struct Row {
+        let title: String
+        let defaultSpec: HotKeySpec
+    }
+
+    struct Note {
+        let title: String
+        let keys: String
+    }
+
+    /// 试着换成新的组合键：成功返回 nil，失败返回原因（原来的会保留）
+    var apply: ((Int, HotKeySpec) -> String?)?
+    /// 录键期间先把现有的全局快捷键都放掉，否则按下去会直接触发截图，录不到
+    var onRecording: ((Bool) -> Void)?
+
+    private let rows: [Row]
+    private var specs: [HotKeySpec]
+    private var buttons: [NSButton] = []
+    private let statusLabel = NSTextField(labelWithString: "")
+    private var recording: Int?
+    private var monitor: Any?
+
+    init(rows: [Row], current: [HotKeySpec], notes: [Note] = []) {
+        self.rows = rows
+        self.specs = current
+        let notesTop = 18 + CGFloat(rows.count) * 40 + 8
+        let height = CGFloat(rows.count) * 40 + 96 + (notes.isEmpty ? 0 : CGFloat(notes.count) * 40 + 8)
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 360, height: height),
+                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        title = "快捷键"
+        isReleasedWhenClosed = false
+        hidesOnDeactivate = false
+        level = .floating
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: 360, height: height))
+        contentView = root
+        for (i, row) in rows.enumerated() {
+            let y = 18 + CGFloat(i) * 40
+            let label = NSTextField(labelWithString: row.title)
+            label.frame = NSRect(x: 16, y: y + 5, width: 140, height: 18)
+            label.font = NSFont.systemFont(ofSize: 13)
+            root.addSubview(label)
+
+            let button = NSButton(title: "", target: self, action: #selector(record(_:)))
+            button.frame = NSRect(x: 160, y: y, width: 120, height: 28)
+            button.bezelStyle = .rounded
+            button.tag = i
+            root.addSubview(button)
+            buttons.append(button)
+
+            let reset = NSButton(title: "默认", target: self, action: #selector(resetRow(_:)))
+            reset.frame = NSRect(x: 284, y: y, width: 60, height: 28)
+            reset.bezelStyle = .rounded
+            reset.tag = i
+            root.addSubview(reset)
+        }
+        if !notes.isEmpty {
+            let line = NSBox(frame: NSRect(x: 16, y: notesTop - 8, width: 328, height: 1))
+            line.boxType = .separator
+            root.addSubview(line)
+        }
+        for (i, note) in notes.enumerated() {
+            let y = notesTop + CGFloat(i) * 40
+            let label = NSTextField(labelWithString: note.title)
+            label.frame = NSRect(x: 16, y: y + 5, width: 140, height: 18)
+            label.font = NSFont.systemFont(ofSize: 13)
+            root.addSubview(label)
+
+            let keys = NSTextField(labelWithString: note.keys)
+            keys.frame = NSRect(x: 160, y: y + 5, width: 184, height: 18)
+            keys.font = NSFont.systemFont(ofSize: 13)
+            keys.textColor = .secondaryLabelColor
+            keys.alignment = .center
+            root.addSubview(keys)
+        }
+        statusLabel.frame = NSRect(x: 16, y: height - 74, width: 328, height: 32)
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        statusLabel.maximumNumberOfLines = 2
+        root.addSubview(statusLabel)
+
+        let done = NSButton(title: "完成", target: self, action: #selector(finish))
+        done.frame = NSRect(x: 264, y: height - 40, width: 80, height: 30)
+        done.bezelStyle = .rounded
+        root.addSubview(done)
+        refresh()
+    }
+
+    func present() {
+        stopRecording()
+        statusLabel.stringValue = "点一下按钮，再按想要的组合键；Esc 取消。"
+        refresh()
+        center()
+        NSApp.activate(ignoringOtherApps: true)
+        makeKeyAndOrderFront(nil)
+    }
+
+    private func refresh() {
+        for (i, button) in buttons.enumerated() {
+            button.title = recording == i ? "请按键…" : specs[i].label
+        }
+    }
+
+    @objc private func record(_ sender: NSButton) {
+        if recording == sender.tag {
+            stopRecording()
+            return
+        }
+        stopRecording()
+        recording = sender.tag
+        onRecording?(true)
+        statusLabel.stringValue = "按下新的组合键，Esc 取消"
+        refresh()
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, let index = self.recording else { return event }
+            if event.keyCode == UInt16(kVK_Escape) {
+                self.stopRecording()
+                self.statusLabel.stringValue = "没改"
+                return nil
+            }
+            let (spec, problem) = HotKeySpec.from(event)
+            guard let spec = spec else {
+                self.statusLabel.stringValue = problem
+                return nil
+            }
+            self.stopRecording()
+            self.change(index, to: spec)
+            return nil
+        }
+    }
+
+    @objc private func resetRow(_ sender: NSButton) {
+        stopRecording()
+        change(sender.tag, to: rows[sender.tag].defaultSpec)
+    }
+
+    private func change(_ index: Int, to spec: HotKeySpec) {
+        if let other = specs.indices.first(where: { $0 != index && specs[$0] == spec }) {
+            statusLabel.stringValue = "\(spec.label) 已经给「\(rows[other].title)」用了"
+            return
+        }
+        if let problem = apply?(index, spec) {
+            statusLabel.stringValue = problem
+            return
+        }
+        specs[index] = spec
+        statusLabel.stringValue = "「\(rows[index].title)」改成了 \(spec.label)"
+        refresh()
+    }
+
+    private func stopRecording() {
+        if let monitor = monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+        if recording != nil {
+            recording = nil
+            onRecording?(false)
+        }
+        refresh()
+    }
+
+    @objc private func finish() {
+        close()
+    }
+
+    override func close() {
+        stopRecording()
+        super.close()
+        NSApp.deactivate()
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        if recording == nil { close() }
+    }
 }
 
 // MARK: - 截图后选择要做什么
@@ -1073,9 +1299,24 @@ enum ShotAction: String, CaseIterable {
     }
 }
 
-/// 没激活的面板上，第一下点击也要算数
+/// 没激活的面板上，第一下点击也要算数；鼠标移上去要能知道（面板不在前台，所以跟踪区域要 activeAlways）
 final class FirstClickButton: NSButton {
+    var onHover: ((Bool) -> Void)?
+    private var tracking: NSTrackingArea?
+
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking = tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onHover?(true) }
+    override func mouseExited(with event: NSEvent) { onHover?(false) }
 }
 
 /// 框选完在鼠标旁边弹的小工具条。不抢焦点，你原来的 app 光标还在；
@@ -1090,6 +1331,11 @@ final class ShotActionBar: NSPanel {
     private var onCancel: (() -> Void)?
     private var autoCancel: DispatchWorkItem?
     private var preferred = ShotAction.ocr
+    private var modelReady = true
+    /// 鼠标正停在哪个按钮上；不在按钮上时高亮上次用的那个
+    private var hovered: ShotAction?
+    /// 高亮的就是回车会做的
+    private var current: ShotAction { hovered ?? preferred }
 
     init() {
         let width = Self.buttonWidth * CGFloat(ShotAction.allCases.count) + 12
@@ -1121,38 +1367,30 @@ final class ShotActionBar: NSPanel {
             button.tag = i
             button.target = self
             button.action = #selector(tapped(_:))
+            let action = ShotAction.allCases[i]
+            button.onHover = { [weak self] inside in
+                guard let self = self else { return }
+                if inside {
+                    self.hovered = action
+                } else if self.hovered == action {
+                    self.hovered = nil
+                }
+                self.restyle()
+            }
             card.addSubview(button)
             buttons.append(button)
         }
     }
 
-    /// 上次用的那个高亮，回车直接重复它。没配模型时翻译和提问灰显，点了会引导去设置
+    /// 鼠标停在哪个上就高亮哪个，不在按钮上时高亮上次用的；回车做高亮的那个。
+    /// 没配模型时翻译和提问灰显，点了会引导去设置
     func present(near point: NSPoint, preferred: ShotAction, modelReady: Bool, seconds: TimeInterval = 10,
                  onChoose: @escaping (ShotAction) -> Void, onCancel: @escaping () -> Void) {
         self.onChoose = onChoose
         self.onCancel = onCancel
         self.preferred = preferred
-
-        for (i, action) in ShotAction.allCases.enumerated() {
-            let button = buttons[i]
-            let usable = action == .ocr || modelReady
-            let text = NSMutableAttributedString(string: "\(i + 1) ", attributes: [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
-                .foregroundColor: stemOutline,
-            ])
-            text.append(NSAttributedString(string: action.title, attributes: [
-                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-                .foregroundColor: usable ? ink : NSColor.tertiaryLabelColor,
-            ]))
-            if action == preferred {
-                text.append(NSAttributedString(string: " ↩", attributes: [
-                    .font: NSFont.systemFont(ofSize: 11),
-                    .foregroundColor: stemOutline,
-                ]))
-            }
-            button.attributedTitle = text
-            button.layer?.backgroundColor = action == preferred ? rgb(0xFBF3D6).cgColor : NSColor.clear.cgColor
-        }
+        self.modelReady = modelReady
+        hovered = nil
 
         // 放在鼠标右下方（松手的地方就是选区的角），靠边时往回收
         let screen = NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
@@ -1165,6 +1403,13 @@ final class ShotActionBar: NSPanel {
             y = max(vf.minY + 6, min(y, vf.maxY - frame.height - 6))
         }
         setFrameOrigin(NSPoint(x: x, y: y))
+        // 出现时鼠标已经停在按钮上的话不会收到 mouseEntered，自己看一眼
+        let mouse = NSEvent.mouseLocation
+        for (i, button) in buttons.enumerated() {
+            let rect = convertToScreen(button.convert(button.bounds, to: nil))
+            if rect.contains(mouse) { hovered = ShotAction.allCases[i] }
+        }
+        restyle()
         orderFrontRegardless()
         registerKeys()
 
@@ -1173,6 +1418,29 @@ final class ShotActionBar: NSPanel {
         let item = DispatchWorkItem { [weak self] in self?.cancel() }
         autoCancel = item
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
+    }
+
+    private func restyle() {
+        for (i, action) in ShotAction.allCases.enumerated() {
+            let button = buttons[i]
+            let usable = action == .ocr || modelReady
+            let text = NSMutableAttributedString(string: "\(i + 1) ", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: stemOutline,
+            ])
+            text.append(NSAttributedString(string: action.title, attributes: [
+                .font: NSFont.systemFont(ofSize: 13, weight: .medium),
+                .foregroundColor: usable ? ink : NSColor.tertiaryLabelColor,
+            ]))
+            if action == current {
+                text.append(NSAttributedString(string: " ↩", attributes: [
+                    .font: NSFont.systemFont(ofSize: 11),
+                    .foregroundColor: stemOutline,
+                ]))
+            }
+            button.attributedTitle = text
+            button.layer?.backgroundColor = action == current ? rgb(0xFBF3D6).cgColor : NSColor.clear.cgColor
+        }
     }
 
     private func registerKeys() {
@@ -1187,8 +1455,8 @@ final class ShotActionBar: NSPanel {
         for (i, action) in ShotAction.allCases.enumerated() {
             bind(digits[i]) { [weak self] in self?.choose(action) }
         }
-        bind(kVK_Return) { [weak self] in self?.choose(self?.preferred ?? .ocr) }
-        bind(kVK_ANSI_KeypadEnter) { [weak self] in self?.choose(self?.preferred ?? .ocr) }
+        bind(kVK_Return) { [weak self] in self?.choose(self?.current ?? .ocr) }
+        bind(kVK_ANSI_KeypadEnter) { [weak self] in self?.choose(self?.current ?? .ocr) }
         bind(kVK_Escape) { [weak self] in self?.cancel() }
     }
 

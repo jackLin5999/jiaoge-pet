@@ -173,6 +173,27 @@ struct Pose {
     var armLeft: CGFloat = 0
     var armRight: CGFloat = 0
     var legLift: [CGFloat] = [0, 0]
+
+    /// 跟上一帧比，画面上哪儿挪得超过 limit 点。呼吸这种慢动作每帧只挪零点几个像素，没动够就不用重画
+    func differs(from o: Pose, byMoreThan limit: CGFloat) -> Bool {
+        if eyeStyle != o.eyeStyle || mouth != o.mouth { return true }
+        let s = ART_SCALE       // 参考图像素 → 点
+        let moves: [CGFloat] = [
+            abs(bob - o.bob),
+            abs(scaleY - o.scaleY) * PET_H,
+            abs(scaleX - o.scaleX) * PET_W / 2,
+            abs(tilt - o.tilt) * PET_H,
+            abs(eyeOpen * eyeWide - o.eyeOpen * o.eyeWide) * 47.5 * s,
+            abs(eyeWide - o.eyeWide) * 26 * s,
+            abs(eyeOffsetX - o.eyeOffsetX) * s,
+            abs(eyeOffsetY - o.eyeOffsetY) * s,
+            abs(armLeft - o.armLeft) * 110 * s,
+            abs(armRight - o.armRight) * 130 * s,
+            abs(legLift[0] - o.legLift[0]) * s,
+            abs(legLift[1] - o.legLift[1]) * s,
+        ]
+        return moves.contains { $0 > limit }
+    }
 }
 
 // MARK: - 视图
@@ -821,8 +842,137 @@ enum PomoMode {
 
 /// 提问时带着的截图：只留在内存里，不写进聊天记录；模型不能看图时用识别出的文字
 struct ChatShot {
-    var png: Data?
+    var image: UploadImage?
     var text: String
+}
+
+/// 一次翻译：长文按行切成几段，最多同时发 3 段，再按顺序拼起来。
+/// 从头连续翻完的几段，加上紧跟着正在翻的那段已经出来的字，就是现在能显示的
+final class TranslationJob {
+    struct Piece {
+        let id: Int
+        var source: String
+        var image: UploadImage?
+        var text = ""
+        var started = false
+        var done = false
+        var task: Task<Void, Never>?
+    }
+
+    var onUpdate: (() -> Void)?
+    var onFinish: ((Error?) -> Void)?
+    private(set) var pieces: [Piece] = []
+    private(set) var finished = false
+    private let config: ChatConfig
+    private let instruction: String
+    private var nextID = 0
+    private var maxParallel = 3
+    private var retried: Set<Int> = []
+
+    init(config: ChatConfig, instruction: String, chunks: [String]) {
+        self.config = config
+        self.instruction = instruction
+        pieces = chunks.map { makePiece($0, image: nil) }
+    }
+
+    init(config: ChatConfig, instruction: String, image: UploadImage) {
+        self.config = config
+        self.instruction = instruction
+        pieces = [makePiece("", image: image)]
+    }
+
+    private func makePiece(_ source: String, image: UploadImage?) -> Piece {
+        nextID += 1
+        return Piece(id: nextID, source: source, image: image)
+    }
+
+    var total: Int { pieces.count }
+    var doneCount: Int { pieces.filter { $0.done }.count }
+
+    var visibleText: String {
+        var parts: [String] = []
+        for piece in pieces {
+            if !piece.text.isEmpty { parts.append(piece.text) }
+            if !piece.done { break }
+        }
+        return PetController.plainish(parts.joined(separator: "\n"))
+    }
+
+    func start() { pump() }
+
+    func cancel() {
+        finished = true
+        pieces.forEach { $0.task?.cancel() }
+    }
+
+    private func index(of id: Int) -> Int? { pieces.firstIndex { $0.id == id } }
+
+    private func pump() {
+        while !finished, pieces.filter({ $0.started && !$0.done }).count < maxParallel,
+              let i = pieces.firstIndex(where: { !$0.started }) {
+            launch(i)
+        }
+        if !finished, pieces.allSatisfy({ $0.done }) {
+            finished = true
+            onFinish?(nil)
+        }
+    }
+
+    private func launch(_ index: Int) {
+        pieces[index].started = true
+        pieces[index].text = ""
+        let piece = pieces[index]
+        let content: Any
+        if let image = piece.image {
+            content = [["type": "text", "text": instruction], imagePart(image)]
+        } else {
+            content = instruction + "\n\n" + piece.source
+        }
+        var received = ""
+        // 翻译要稳，温度压低
+        let task = llmChatStream(config: config, messages: [["role": "user", "content": content]],
+                                 maxTokens: piece.image == nil ? 2400 : 2000, temperature: 0.2,
+                                 onDelta: { [weak self] delta in
+            guard let self = self, !self.finished, let i = self.index(of: piece.id) else { return }
+            received += delta
+            self.pieces[i].text = PetController.plainish(received)
+            self.onUpdate?()
+        }, completion: { [weak self] result in
+            self?.complete(piece.id, result)
+        })
+        if let i = self.index(of: piece.id), !pieces[i].done { pieces[i].task = task }
+    }
+
+    private func complete(_ id: Int, _ result: Result<LLMReply, Error>) {
+        guard !finished, let i = index(of: id) else { return }
+        switch result {
+        case .success(let reply):
+            // 被 max_tokens 截断了：对半拆开重来（图没法拆，有多少算多少）
+            if reply.truncated, pieces[i].image == nil, pieces[i].source.count > 160 {
+                let halves = PetController.splitInHalf(pieces[i].source).map { makePiece($0, image: nil) }
+                pieces.replaceSubrange(i...i, with: halves)
+            } else {
+                pieces[i].text = PetController.plainish(reply.text)
+                pieces[i].done = true
+                pieces[i].task = nil
+            }
+            onUpdate?()
+            pump()
+        case .failure(let error):
+            // 同时发太多被限流了：改成一段一段来，这段等一下重试一次
+            if case LLMError.http(429, _)? = error as? LLMError, !retried.contains(id) {
+                retried.insert(id)
+                maxParallel = 1
+                pieces[i].started = false
+                pieces[i].text = ""
+                pieces[i].task = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.pump() }
+                return
+            }
+            cancel()
+            onFinish?(error)
+        }
+    }
 }
 
 /// 安静时攒下来、之后再说的一句提醒
@@ -878,6 +1028,11 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var bubble: BubbleWindow!
     var statusItem: NSStatusItem!
     var timer: Timer?
+    /// 省电：做动作时每秒 60 帧，闲着 30 帧且没动够不重画，看不见时每秒只跑 2 次逻辑
+    var tickRate: Double = 0
+    var lastDrawnPose: Pose?
+    var screenLocked = false
+    var screensAsleep = false
 
     var t: TimeInterval = 0
     var lastTick: TimeInterval = 0
@@ -923,6 +1078,12 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var chatInput: ChatInputWindow?
     var settingsWindow: SettingsWindow?
 
+    // 翻译
+    var translation: TranslationJob?
+    var translationDirty = false
+    var translationShown = ""
+    var translationReserved: CGFloat = 0
+
     // 番茄钟
     var pomoMode: PomoMode = .none
     var pomoEnd: TimeInterval = 0
@@ -936,8 +1097,10 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var stretchMinutes = 45
     var nextStretch: TimeInterval = .infinity
 
-    // 主动提醒：专注和全屏时先攒着
+    // 主动提醒：专注、全屏和人不在时先攒着
     var heldNudges: [HeldNudge] = []
+    var heldWhileAway = false
+    var idleSecondsNow: TimeInterval = 0
     var quietInFullScreen = true
     var fullScreenNow = false
     var fullScreenLastSeen = false
@@ -949,11 +1112,16 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var clipExcludedApps: [String: String] = [:]      // bundle ID → 显示名
     var lastOtherApp: (id: String, name: String)?
     var clipItems: [ClipEntry] = []
+    /// 蕉哥读写的剪贴板；测试时换成私有的，免得动到真的
+    var pasteboard = NSPasteboard.general
     var clipChangeCount = -1
     var lastClipPoll: TimeInterval = -10
     var clipPanel: ClipboardPanel?
     var hotKey: GlobalHotKey?
     var shotHotKey: GlobalHotKey?
+    var shotSpec = HotKeySpec.defaultShot
+    var clipSpec = HotKeySpec.defaultClip
+    var hotKeyWindow: HotKeyWindow?
     var shotBar: ShotActionBar?
     var shotCapturing = false
     var pendingShot: URL?
@@ -1046,6 +1214,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         startNetworkMonitor()
         startTrackingFrontApp()
+        startWatchingVisibility()
 
         // 临时诊断：记录本进程真实的屏幕录制权限（区分终端启动 / open 启动）
         let permLog = "/tmp/jiaoge-perm.log"
@@ -1164,10 +1333,10 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 5. 全局快捷键能否注册
         var registered: [String] = []
-        for (name, code) in [(ClipboardHotKey.label, ClipboardHotKey.keyCode),
-                             (ScreenHotKey.label, ScreenHotKey.keyCode)] {
-            if GlobalHotKey(keyCode: code, modifiers: ClipboardHotKey.modifiers) != nil {
-                registered.append(name)
+        for spec in [HotKeySpec.load("clipHotKey", default: .defaultClip),
+                     HotKeySpec.load("shotHotKey", default: .defaultShot)] {
+            if GlobalHotKey(keyCode: spec.keyCode, modifiers: spec.modifiers) != nil {
+                registered.append(spec.label)
             }
         }
         let others = NSWorkspace.shared.runningApplications
@@ -1210,18 +1379,69 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func startTimer() {
         lastTick = CACurrentMediaTime()
         clockOrigin = lastTick
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+        setTickRate(60)
+    }
+
+    func setTickRate(_ hz: Double) {
+        guard hz != tickRate else { return }
+        tickRate = hz
+        timer?.invalidate()
+        let timer = Timer(timeInterval: 1 / hz, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        // 闲着时允许系统把唤醒凑到一起
+        timer.tolerance = hz >= 60 ? 0 : 0.1 / hz
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+    }
+
+    /// 看得见才画：锁屏、显示器睡了、窗口被完全挡住都不画
+    var petVisible: Bool {
+        !screenLocked && !screensAsleep && window.occlusionState.contains(.visible)
+    }
+
+    /// 正在做动作：点击反应、拖动、闲时小动作、压扁、挥手、冒爱心
+    var animating: Bool {
+        t < happyEnd || isDragging || !view.particles.isEmpty
+            || t - idleStart <= idleDuration(idleKind)
+            || t - squashStart <= 0.55
+            || t - waveStart <= 0.95
+    }
+
+    func startWatchingVisibility() {
+        let ws = NSWorkspace.shared.notificationCenter
+        let dnc = DistributedNotificationCenter.default()
+        func watch(_ center: NotificationCenter, _ name: Notification.Name, _ change: @escaping () -> Void) {
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                change()
+                self?.visibilityChanged()
+            }
+        }
+        watch(ws, NSWorkspace.screensDidSleepNotification) { [weak self] in self?.screensAsleep = true }
+        watch(ws, NSWorkspace.screensDidWakeNotification) { [weak self] in self?.screensAsleep = false }
+        // 快速切换用户和锁屏一样：这个会话的屏幕没人看
+        watch(ws, NSWorkspace.sessionDidResignActiveNotification) { [weak self] in self?.screenLocked = true }
+        watch(ws, NSWorkspace.sessionDidBecomeActiveNotification) { [weak self] in self?.screenLocked = false }
+        watch(dnc, Notification.Name("com.apple.screenIsLocked")) { [weak self] in self?.screenLocked = true }
+        watch(dnc, Notification.Name("com.apple.screenIsUnlocked")) { [weak self] in self?.screenLocked = false }
+        NotificationCenter.default.addObserver(forName: NSWindow.didChangeOcclusionStateNotification,
+                                               object: window, queue: .main) { [weak self] _ in
+            self?.visibilityChanged()
+        }
+    }
+
+    func visibilityChanged() {
+        lastDrawnPose = nil
+        setTickRate(petVisible ? 60 : 2)        // 下一帧再按实际情况定
     }
 
     func tick() {
         let now = CACurrentMediaTime()
         let elapsed = now - lastTick
         lastTick = now
-        let dt = min(elapsed, 0.05)
+        let visible = petVisible
+        // 每帧限幅是怕卡一下动画跳太远；看不见时没有动画，按真实时间走
+        let dt = min(elapsed, visible ? 0.05 : 1)
         t += dt
 
         // 睡眠或长时间挂起后把截止点整体后移：合上盖子的时间不算久坐，也不该把番茄直接跳过
@@ -1249,6 +1469,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         advanceChatReveal()
+        advanceTranslationReveal()
 
         // 番茄钟
         if pomoMode != .none && clock >= pomoEnd { finishPomodoro() }
@@ -1257,9 +1478,9 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if stretchMinutes > 0 && clock >= nextStretch { sedentaryReminder() }
 
         // 剪贴板（不用每帧读）
-        if clipboardEnabled && t - lastClipPoll >= 0.5 {
-            lastClipPoll = t
-            pollClipboard()
+        if clipboardEnabled && clock - lastClipPoll >= 0.5 {
+            lastClipPoll = clock
+            pollClipboard(pasteboard)
         }
 
         updateStatusTitle()
@@ -1300,11 +1521,37 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let panel = clipPanel, panel.isVisible { panel.follow(window) }
         }
 
+        guard visible else {
+            view.particles.removeAll()
+            lastDrawnPose = nil
+            setTickRate(2)
+            return
+        }
         view.crownKey = crownKey
-        view.pose = makePose()
+        let hadParticles = !view.particles.isEmpty
         updateParticles(dt)
-        view.needsDisplay = true
+        let pose = makePose()
+        let moving = animating || hadParticles      // 最后一颗爱心消失那帧也要画
+        let limit = 0.5 / max(1, window.backingScaleFactor)
+        if moving || lastDrawnPose.map({ pose.differs(from: $0, byMoreThan: limit) }) ?? true {
+            view.pose = pose
+            lastDrawnPose = pose
+            view.needsDisplay = true
+        }
         updateClickThrough()
+        setTickRate(moving ? 60 : 30)
+    }
+
+    func idleDuration(_ kind: Int) -> TimeInterval {
+        switch kind {
+        case 0: return 0.55
+        case 1: return 1.1
+        case 3: return 1.7
+        case 4: return 1.5
+        case 5: return 0.6
+        case 6: return 2.4
+        default: return 0.75
+        }
     }
 
     func makePose() -> Pose {
@@ -1330,17 +1577,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        let dur: TimeInterval
-        switch idleKind {
-        case 0: dur = 0.55
-        case 1: dur = 1.1
-        case 3: dur = 1.7
-        case 4: dur = 1.5
-        case 5: dur = 0.6
-        case 6: dur = 2.4
-        default: dur = 0.75
-        }
-        let ip = (t - idleStart) / dur
+        let ip = (t - idleStart) / idleDuration(idleKind)
         if ip >= 0 && ip <= 1 {
             switch idleKind {
             case 0:
@@ -1494,8 +1731,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         happyEnd = t + 1.5
         squashStart = t
         waveStart = t + 0.05
-        // 正显示着常驻译文时，戳它只做动作，不拿新台词盖掉译文
-        if !bubble.isSticky {
+        // 正显示着常驻译文或者正在翻译时，戳它只做动作，不拿新台词盖掉译文
+        if !bubble.isSticky && translation == nil {
             speak(phrase(for: clickCount, part: part),
                   subtitle: clickCount >= 2 ? "连击 ×\(clickCount)" : "")
         }
@@ -1645,12 +1882,15 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         // 常用：直接点
         menu.addItem(action(chatInput?.isVisible == true ? "关闭对话框" : "打开对话框", #selector(toggleChatAction)))
-        menu.addItem(action("截图（\(ScreenHotKey.label)）", #selector(captureAction)))
+        if translation != nil {
+            menu.addItem(action("停止翻译", #selector(stopTranslation)))
+        }
+        menu.addItem(action("截图（\(shotSpec.label)）", #selector(captureAction)))
         menu.addItem(action("查看上次识别结果", #selector(showLastResult), enabled: !lastResultText.isEmpty))
         menu.addItem(.separator())
 
         // 剪贴板
-        var clipItemsMenu = [note("\(ClipboardHotKey.label) 快速呼出"), .separator()]
+        var clipItemsMenu = [note("\(clipSpec.label) 快速呼出"), .separator()]
         if clipItems.isEmpty {
             clipItemsMenu.append(note("（还没有记录）"))
         } else {
@@ -1740,6 +1980,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             action("音效", #selector(toggleSound), on: soundEnabled),
             action("开机自动启动", #selector(toggleLaunchAtLogin), on: launchAtLoginEnabled()),
             action("全屏时暂停提醒", #selector(toggleQuietInFullScreen), on: quietInFullScreen),
+            action("快捷键…", #selector(openHotKeys)),
             .separator(),
             action("清空聊天记忆", #selector(clearChatHistory)),
         ]))
@@ -1787,7 +2028,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             clipItems = old.map { ClipEntry(kind: "text", text: $0) }   // 旧版本存的是纯字符串数组
         }
         sortClips()
-        clipChangeCount = NSPasteboard.general.changeCount
+        clipChangeCount = pasteboard.changeCount
         resetStretchTimer()
         loadClickStats()
 
@@ -1941,10 +2182,15 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 主动提醒
 
-    /// 这会儿别主动开口：专注中、全屏中、番茄卡片正等你选、气泡上留着译文，或者正在聊天
+    /// 人不在电脑前：锁屏、显示器睡了，或者 5 分钟没碰键鼠
+    var userAway: Bool { screenLocked || screensAsleep || idleSecondsNow >= 300 }
+
+    /// 这会儿别主动开口：专注中、全屏中、人不在、番茄卡片正等你选、气泡上留着译文，或者正在聊天、翻译
     var isQuiet: Bool {
         pomoMode == .focus
             || (quietInFullScreen && fullScreenNow)
+            || userAway
+            || translation != nil
             || pomoPrompt?.isVisible == true
             || bubble.isSticky
             || chatInFlight
@@ -1964,16 +2210,19 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let key = key else { return }
         heldNudges.removeAll { $0.key == key }
         heldNudges.append(HeldNudge(key: key, text: text, hasSound: sound != nil, time: clock))
+        if userAway { heldWhileAway = true }
     }
 
     /// 安静结束、气泡也空出来了，把攒的话合成一个气泡说掉。放太久的（比如全屏看了一下午）就不提了
     func flushHeldNudges() {
         guard !heldNudges.isEmpty, !isQuiet, !bubble.isVisible else { return }
         let fresh = heldNudges.filter { clock - $0.time < 3600 }
+        let away = heldWhileAway
         heldNudges.removeAll()
+        heldWhileAway = false
         guard !fresh.isEmpty else { return }
         if fresh.contains(where: { $0.hasSound }) { playSound("Ping", volume: 0.4) }
-        speak(fresh.map { $0.text }.joined(separator: "\n"), subtitle: "刚才没打扰你",
+        speak(fresh.map { $0.text }.joined(separator: "\n"), subtitle: away ? "你刚才不在，攒着没说" : "刚才没打扰你",
               duration: min(20, 6 + Double(fresh.count) * 2), maxWidth: 300)
     }
 
@@ -2014,7 +2263,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastOtherApp = (id, app.localizedName ?? id)
     }
 
-    func pollClipboard(_ pb: NSPasteboard = .general) {
+    func pollClipboard(_ pb: NSPasteboard) {
         guard pb.changeCount != clipChangeCount else { return }
         clipChangeCount = pb.changeCount
 
@@ -2151,18 +2400,15 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         speak("…", duration: 60, maxWidth: 120)
 
         var system = "你是一只叫蕉哥的香蕉桌宠，性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。"
-        if let shot = shot, shot.png == nil {
+        if let shot = shot, shot.image == nil {
             system += "\n\n用户框选了屏幕上的一块区域在问你，下面是从中识别出的文字：\n\(shot.text.prefix(6000))"
         }
         var messages: [[String: Any]] = [["role": "system", "content": system]]
         messages += chatHistory.suffix(12).map { $0 as [String: Any] }
-        if let png = shot?.png {
+        if let image = shot?.image {
             // 每次追问都带上图：接口不记得之前发过什么
             chatInput?.setPlaceholder("接着问这张图…（Esc 收起）")
-            messages[messages.count - 1]["content"] = [
-                ["type": "text", "text": text],
-                ["type": "image_url", "image_url": ["url": "data:image/png;base64," + png.base64EncodedString()]],
-            ]
+            messages[messages.count - 1]["content"] = [["type": "text", "text": text], imagePart(image)]
         } else if shot != nil {
             chatInput?.setPlaceholder("接着问这张图…（Esc 收起）")
         }
@@ -2191,7 +2437,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let partial = Self.plainish(received)
                 if partial.isEmpty {
                     self.chatInFlight = false
-                    let hint = shot?.png == nil ? "" : "（这个模型可能不支持看图）"
+                    let hint = shot?.image == nil ? "" : "（这个模型可能不支持看图）"
                     self.speak("聊不下去了：\(error.localizedDescription)\(hint)", duration: 6, maxWidth: 300)
                 } else {
                     // 断在半路：已经收到的话留着，下一句接着聊
@@ -2216,13 +2462,16 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return max(100, min(280, screen.visibleFrame.maxY - input.frame.maxY - 8))
     }
 
-    /// 气泡放得下多少：放不下就只留开头，超出的点开看，不把已经显示的字往上挤
     func chatPreview(_ text: String) -> (text: String, clipped: Bool) {
-        let limit = chatBubbleMaxHeight
-        if bubble.fits(text, maxWidth: 300, maxHeight: limit) { return (text, false) }
+        bubblePreview(text, maxWidth: 300, maxHeight: chatBubbleMaxHeight)
+    }
+
+    /// 气泡放得下多少：放不下就只留开头，超出的点开看，不把已经显示的字往上挤
+    func bubblePreview(_ text: String, maxWidth: CGFloat, maxHeight: CGFloat) -> (text: String, clipped: Bool) {
+        if bubble.fits(text, maxWidth: maxWidth, maxHeight: maxHeight) { return (text, false) }
         // 留出一行提示的高度
         var preview = String(text.prefix(180))
-        while !bubble.fits(preview + "…", maxWidth: 300, maxHeight: limit - 40), preview.count > 20 {
+        while !bubble.fits(preview + "…", maxWidth: maxWidth, maxHeight: maxHeight - 40), preview.count > 20 {
             preview = String(preview.dropLast(20))
         }
         return (preview + "…", true)
@@ -2478,14 +2727,19 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func periodicChecks() {
-        // 每 5 秒：统计连续用电脑的时长
+        // 每 5 秒：统计连续用电脑的时长，看人在不在
         if clock - lastActivityCheck >= 5 {
             let step = clock - lastActivityCheck
             lastActivityCheck = clock
-            if secondsSinceUserInput() < 120 {
+            idleSecondsNow = secondsSinceUserInput()
+            if idleSecondsNow < 120 {
                 activeSeconds += step
             } else {
                 activeSeconds = 0
+            }
+            // 离开过一阵就算起来活动过了：久坐从回来那一刻重新算
+            if userAway, stretchMinutes > 0 {
+                nextStretch = clock + Double(stretchMinutes) * 60
             }
             if activeSeconds > 90 * 60, clock - lastBreakAt > 1800 {
                 activeSeconds = 0
@@ -2865,7 +3119,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func copyClipboard(_ entry: ClipEntry) {
-        let pb = NSPasteboard.general
+        let pb = pasteboard
         pb.clearContents()
         if entry.isImage, let image = entry.loadImage() {
             pb.writeObjects([image])
@@ -2877,18 +3131,68 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func setupHotKey() {
-        hotKey = GlobalHotKey(keyCode: ClipboardHotKey.keyCode,
-                              modifiers: ClipboardHotKey.modifiers)
-        hotKey?.onPress = { [weak self] in self?.showClipboardPanel() }
-        if hotKey == nil {
-            FileHandle.standardError.write("全局快捷键 \(ClipboardHotKey.label) 注册失败\n".data(using: .utf8)!)
-        }
+        shotSpec = HotKeySpec.load("shotHotKey", default: .defaultShot)
+        clipSpec = HotKeySpec.load("clipHotKey", default: .defaultClip)
+        registerHotKeys()
+    }
 
-        shotHotKey = GlobalHotKey(keyCode: ScreenHotKey.keyCode, modifiers: ScreenHotKey.modifiers)
-        shotHotKey?.onPress = { [weak self] in self?.startScreenshot() }
-        if shotHotKey == nil {
-            FileHandle.standardError.write("全局快捷键 \(ScreenHotKey.label) 注册失败\n".data(using: .utf8)!)
+    func registerHotKeys() {
+        hotKey = makeHotKey(clipSpec) { [weak self] in self?.showClipboardPanel() }
+        shotHotKey = makeHotKey(shotSpec) { [weak self] in self?.startScreenshot() }
+    }
+
+    func makeHotKey(_ spec: HotKeySpec, _ action: @escaping () -> Void) -> GlobalHotKey? {
+        guard let key = GlobalHotKey(keyCode: spec.keyCode, modifiers: spec.modifiers) else {
+            FileHandle.standardError.write("全局快捷键 \(spec.label) 注册失败\n".data(using: .utf8)!)
+            return nil
         }
+        key.onPress = action
+        return key
+    }
+
+    @objc func openHotKeys() {
+        if hotKeyWindow == nil {
+            let window = HotKeyWindow(rows: [.init(title: "截图", defaultSpec: .defaultShot),
+                                             .init(title: "剪贴板面板", defaultSpec: .defaultClip)],
+                                      current: [shotSpec, clipSpec],
+                                      // 菜单栏图标被挤掉时的备用入口，改不了，只提示
+                                      notes: [.init(title: "完整菜单", keys: "按住 ⌥ 再右键桌宠")])
+            window.apply = { [weak self] index, spec in self?.changeHotKey(index, to: spec) }
+            window.onRecording = { [weak self] recording in
+                guard let self = self else { return }
+                if recording {
+                    self.hotKey = nil
+                    self.shotHotKey = nil
+                } else {
+                    self.registerHotKeys()
+                }
+            }
+            hotKeyWindow = window
+        }
+        hotKeyWindow?.present()
+    }
+
+    /// 换成新的组合键；注册不上就保留原来的，返回原因
+    func changeHotKey(_ index: Int, to spec: HotKeySpec) -> String? {
+        let isShot = index == 0
+        if isShot { shotHotKey = nil } else { hotKey = nil }      // 先放掉旧的，换回默认时才注册得上
+        let action: () -> Void = isShot
+            ? { [weak self] in self?.startScreenshot() }
+            : { [weak self] in self?.showClipboardPanel() }
+        guard let key = makeHotKey(spec, action) else {
+            registerHotKeys()
+            return "\(spec.label) 注册不上，可能被别的 app 占用了，换一个试试"
+        }
+        if isShot {
+            shotHotKey = key
+            shotSpec = spec
+            spec.save("shotHotKey")
+        } else {
+            hotKey = key
+            clipSpec = spec
+            spec.save("clipHotKey")
+        }
+        return nil
     }
 
     // MARK: 截图：框选完再选识字、翻译还是提问
@@ -2939,6 +3243,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         lastShotAction = action
         UserDefaults.standard.set(action.rawValue, forKey: "lastShotAction")
+        translation?.cancel()           // 换了新截图，上一段还没翻完的不要了
+        translation = nil
         switch action {
         case .ocr: recognizeShot(url, translate: false)
         case .translate: recognizeShot(url, translate: true)
@@ -2949,13 +3255,18 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// 打开对话框问这张图。能看图的模型直接发图，不能看图的先在本地识别成文字
     func askAboutShot(_ url: URL) {
         if config.vision {
-            let data = (try? Data(contentsOf: url)) ?? Data()
-            try? FileManager.default.removeItem(at: url)
-            guard !data.isEmpty else {
-                speak("截图读不出来", duration: 3)
-                return
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let image = ScreenText.uploadImage(url)
+                try? FileManager.default.removeItem(at: url)
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    guard let image = image else {
+                        self.speak("截图读不出来", duration: 3)
+                        return
+                    }
+                    self.startAsking(ChatShot(image: image, text: ""), subtitle: "📷 模型会直接看这张图")
+                }
             }
-            startAsking(ChatShot(png: data, text: ""), subtitle: "📷 模型会直接看这张图")
             return
         }
         speak("先看看图里写了啥…", duration: 120, maxWidth: 200)   // 系统第一次加载识别模型可能要几十秒
@@ -2968,7 +3279,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.speak("这块没认出文字", subtitle: "模型能看图的话，去设置里勾上「这个模型能看图」", duration: 6, maxWidth: 320)
                     return
                 }
-                self.startAsking(ChatShot(png: nil, text: text), subtitle: "📷 识别出 \(text.count) 字，发给模型的是文字")
+                self.startAsking(ChatShot(image: nil, text: text), subtitle: "📷 识别出 \(text.count) 字，发给模型的是文字")
             }
         }
     }
@@ -2985,14 +3296,14 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             // 模型能看图的话，翻译直接发原图，不做本地识别
             if translate, self?.config.vision == true {
-                let data = (try? Data(contentsOf: url)) ?? Data()
+                let image = ScreenText.uploadImage(url)
                 try? FileManager.default.removeItem(at: url)
                 DispatchQueue.main.async {
                     guard let self = self else { return }
-                    if data.isEmpty {
-                        self.speak("截图读不出来", duration: 3)
+                    if let image = image {
+                        self.translateImage(image)
                     } else {
-                        self.translateImage(data)
+                        self.speak("截图读不出来", duration: 3)
                     }
                 }
                 return
@@ -3054,78 +3365,93 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showResult(lastResultText, title: "识别结果")
     }
 
-    func translateImage(_ png: Data) {
-        speak("翻译中…", duration: 60, maxWidth: 160)
-        llmVision(config: config, prompt: visionInstruction(), imagePNG: png) { [weak self] result in
-            guard let self = self else { return }
-            switch result {
-            case .success(let reply):
-                let clean = Self.plainish(reply.text.isEmpty ? "……" : reply.text)
-                self.putOnPasteboard(clean)
-                self.happyEnd = self.t + 1.2
-                self.playSound("Pop", volume: 0.3)
-                self.lastResultText = clean
-                self.speak(clean, subtitle: "译文已复制 · 点气泡看全文", maxWidth: 320, sticky: true,
-                           onTap: { [weak self] in self?.showResult(clean, title: "译文") })
-            case .failure(let error):
-                let hint = self.config.vision ? "（这个模型可能不支持看图）" : ""
-                self.speak("翻译失败：\(error.localizedDescription)\(hint)", duration: 6, maxWidth: 300)
-            }
-        }
+    /// 直接把截图发给多模态模型翻译
+    func translateImage(_ image: UploadImage) {
+        startTranslation(TranslationJob(config: config, instruction: visionInstruction(), image: image),
+                         reserve: 150)
     }
 
     func translateText(_ text: String) {
-        var queue = Self.splitForTranslation(text)
-        var pieces: [String] = []
-        speak("翻译中…", duration: 60, maxWidth: 160)
+        let job = TranslationJob(config: config, instruction: translationInstruction(),
+                                 chunks: Self.splitForTranslation(text))
+        // 译文和原文在气泡里占的地方差不多（中文字少但宽），按原文先占好位置，字就不会被往上顶
+        let needed = bubble.neededHeight(String(text.prefix(600)), maxWidth: 320) + 16
+        startTranslation(job, reserve: min(280, max(60, needed)))
+    }
 
-        func finish() {
-            let out = pieces.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !out.isEmpty else {
-                speak("没翻出东西", duration: 3)
-                return
-            }
-            putOnPasteboard(out)
-            happyEnd = t + 1.2
-            lastResultText = out
-            speak(out, subtitle: "译文已复制 · 点气泡看全文", maxWidth: 320, sticky: true,
-                  onTap: { [weak self] in self?.showResult(out, title: "译文") })
-        }
-
-        func step() {
-            guard !queue.isEmpty else {
-                finish()
-                return
-            }
-            let chunk = queue.removeFirst()
-            if !pieces.isEmpty {
-                speak("翻译中… 已译 \(pieces.count) 段", duration: 60, maxWidth: 200)
-            }
-            let prompt = translationInstruction() + "\n\n" + chunk
-            llmChat(config: config, messages: [["role": "user", "content": prompt]], maxTokens: 2400) { [weak self] result in
-                guard let self = self else { return }
-                switch result {
-                case .success(let reply):
-                    if reply.truncated, chunk.count > 160 {
-                        // 被 max_tokens 截断了：对半拆开重来
-                        queue.insert(contentsOf: Self.splitInHalf(chunk), at: 0)
-                        step()
-                        return
-                    }
-                    let clean = Self.plainish(reply.text)
-                    if !clean.isEmpty { pieces.append(clean) }
-                    step()
-                case .failure(let error):
-                    if pieces.isEmpty {
-                        self.speak("翻译失败：\(error.localizedDescription)", duration: 6, maxWidth: 300)
-                    } else {
-                        self.putOnPasteboard(pieces.joined(separator: "\n"))
-                        self.speak("只翻到一半：\(error.localizedDescription)", duration: 6, maxWidth: 300)
-                    }
+    /// 边翻边显示：多段同时翻，气泡里按顺序显示翻好的部分；点气泡停止
+    func startTranslation(_ job: TranslationJob, reserve: CGFloat) {
+        translation?.cancel()
+        translation = job
+        translationShown = ""
+        translationReserved = reserve
+        translationDirty = false
+        job.onUpdate = { [weak self] in self?.translationDirty = true }
+        job.onFinish = { [weak self, weak job] error in
+            guard let self = self, let job = job, self.translation === job else { return }
+            self.translation = nil
+            let text = job.visibleText
+            if let error = error {
+                self.playSound("Basso", volume: 0.35)
+                let hint = job.pieces.first?.image != nil ? "（这个模型可能不支持看图）" : ""
+                if text.isEmpty {
+                    self.speak("翻译失败：\(error.localizedDescription)\(hint)", duration: 6, maxWidth: 300)
+                } else {
+                    self.deliverTranslation(text, note: "只翻到一半：\(error.localizedDescription)")
                 }
+            } else if text.isEmpty {
+                self.speak("没翻出东西", duration: 3)
+            } else {
+                self.playSound("Pop", volume: 0.3)
+                self.deliverTranslation(text, note: "译文已复制")
             }
         }
-        step()
+        speak("翻译中…", subtitle: "点气泡停止", duration: 120, maxWidth: 200,
+              onTap: { [weak self] in self?.stopTranslation() })
+        job.start()
+    }
+
+    /// 每帧调一次：有新字才重画气泡。正在框选新截图时先不出来挡着
+    func advanceTranslationReveal() {
+        guard let job = translation, translationDirty, !shotCapturing, shotBar?.isVisible != true else { return }
+        translationDirty = false
+        let text = job.visibleText
+        guard !text.isEmpty else { return }
+        let (preview, clipped) = bubblePreview(text, maxWidth: 320, maxHeight: 280)
+        if clipped || bubble.neededHeight(preview, maxWidth: 320) + 16 > translationReserved {
+            translationReserved = 280       // 占小了只放大一次，直接放到最大
+        }
+        let progress = job.total > 1 ? "翻译中 \(job.doneCount)/\(job.total) 段" : "翻译中"
+        let shown = preview + "\u{0}" + progress
+        guard shown != translationShown else { return }
+        translationShown = shown
+        speak(preview, subtitle: progress + " · 点气泡停止", duration: 120, maxWidth: 320, maxHeight: 280,
+              sizingText: preview, minSize: NSSize(width: 320, height: translationReserved),
+              onTap: { [weak self] in self?.stopTranslation() })
+    }
+
+    @objc func stopTranslation() {
+        guard let job = translation else { return }
+        job.cancel()
+        translation = nil
+        let text = job.visibleText
+        guard !text.isEmpty else {
+            speak("翻译停了", duration: 2)
+            return
+        }
+        deliverTranslation(text, note: "已停止，翻好的部分已复制")
+    }
+
+    /// 译文进剪贴板，常驻在气泡里等你点别处；先按翻译时占的大小显示，再收到刚好
+    func deliverTranslation(_ text: String, note: String) {
+        putOnPasteboard(text)
+        happyEnd = t + 1.2
+        lastResultText = text
+        let (preview, clipped) = bubblePreview(text, maxWidth: 320, maxHeight: 280)
+        speak(preview, subtitle: note + (clipped ? " · 点气泡看全文" : ""), maxWidth: 320, maxHeight: 280,
+              sticky: true, sizingText: preview, minSize: NSSize(width: 320, height: translationReserved),
+              onTap: { [weak self] in self?.showResult(text, title: "译文") })
+        bubble.settle(maxWidth: 320, maxHeight: 280, above: window)
     }
 
     /// 按行切成适合一次请求的小段，尽量不切断句子
@@ -3158,7 +3484,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// 放到剪贴板；不更新 clipChangeCount，让它顺便进剪贴板历史
     func putOnPasteboard(_ text: String) {
-        let pb = NSPasteboard.general
+        let pb = pasteboard
         pb.clearContents()
         pb.setString(text, forType: .string)
     }
@@ -3194,7 +3520,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func toggleClipboard() {
         clipboardEnabled.toggle()
         UserDefaults.standard.set(clipboardEnabled, forKey: "clipboardEnabled")
-        if clipboardEnabled { clipChangeCount = NSPasteboard.general.changeCount }
+        if clipboardEnabled { clipChangeCount = pasteboard.changeCount }
     }
 
     @objc func toggleClipExclusion() {

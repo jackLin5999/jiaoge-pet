@@ -100,11 +100,14 @@ Press **`⌃⌥S`** and select a region (the system selection UI, Esc to cancel)
 - **2 Translate** — sent to your LLM; the translation goes to the clipboard and appears in the bubble
 - **3 Ask** — opens the chat box so you can ask about what you selected, with follow-ups until you close it
 
-Use the number keys or click. **Return repeats your last choice**; Esc or clicking elsewhere cancels, and it cancels by itself after 10 seconds. The toolbar doesn't take focus, so your cursor stays in your app.
+Use the number keys or click. The button under the pointer is highlighted and **Return does the highlighted one**
+(your last choice when the pointer isn't over a button); Esc or clicking elsewhere cancels, and it cancels by itself after 10 seconds. The toolbar doesn't take focus, so your cursor stays in your app.
+
+The shortcuts can be changed under Settings → *Shortcuts…*: click a button, then press the new combination (it must include ⌃, ⌥ or ⌘).
 
 Recognition runs on-device via Apple's Vision framework, **no network involved**; only Translate and Ask call the API, so configure a model first.
 
-**What Ask sends**: with "this model can see images" enabled, the whole screenshot; otherwise the locally recognized text (so images without text can't be asked about). Neither is saved to chat history, and each follow-up sends it again, which costs more tokens with images.
+**What Ask sends**: with "this model can see images" enabled, the whole screenshot; otherwise the locally recognized text (so images without text can't be asked about). Screenshots are first scaled down on your Mac to 1600 px on the long side and sent as whichever of PNG or JPEG is smaller, which saves bandwidth and tokens. Neither is saved to chat history, and each follow-up sends it again.
 
 **Long results**: the bubble shows the first ~120 characters — **click the bubble** to open a scrollable
 full-text card where you can select and copy everything. The menu also has *View last result*.
@@ -120,6 +123,8 @@ Translation results work the same way.
 Enable "this model can see images" in Model settings to use the second mode. For DeepSeek use `deepseek-flash`.
 
 Without a configured model, Translate and Ask are greyed out on the toolbar; choosing one tells you so and opens the settings.
+
+**Translations stream in** as they're generated. While translating, **click the bubble to stop**; whatever is done so far is still copied.
 
 **The translation bubble stays on screen** until you click elsewhere. Dragging the pet moves it along instead of dismissing it.
 
@@ -142,14 +147,15 @@ A few accented Latin languages may lose diacritics (Spanish ñ, Vietnamese tones
 - When two columns are detected, text is read **column by column**, not interleaved
 - Large vertical gaps are preserved as blank lines (paragraph breaks)
 
-Long text is translated in chunks; if a chunk hits the token limit (`finish_reason == length`) it is split in half and
+Long text is translated in chunks, up to 3 at a time, then put back together in order; if the API rate-limits, it falls
+back to one chunk at a time. If a chunk hits the token limit (`finish_reason == length`) it is split in half and
 retried, so long screenshots don't lose their tail.
 
 ## Clipboard history
 
 Polls the clipboard every 0.5 s and keeps the last 20 **text and image** entries.
 
-- **Right-click the pet**, or press **`⌃⌥V`** anywhere: a list appears above the pet. Type to search, press 1–9 to pick,
+- **Right-click the pet**, or press **`⌃⌥V`** anywhere (changeable under Settings → *Shortcuts…*): a list appears above the pet. Type to search, press 1–9 to pick,
   ↑↓ then Enter also works. Esc or a click outside closes it. Picking puts the item back on the clipboard and returns
   focus to your previous app — just press ⌘V
 - Click the **📌** on the right of a row to pin it; pinned items are never evicted
@@ -207,7 +213,7 @@ and 5 / 10.
 
 It also checks in on you (all configurable or disableable in the menu):
 
-- **Sitting reminder**: every 45 minutes by default (30 / 60 or off)
+- **Sitting reminder**: every 45 minutes by default (30 / 60 or off). Being away for 5+ minutes (or locking the screen) counts as a break, so the timer restarts when you're back
 - **Water**: hourly between 9:00 and 21:00
 - **Lunch**: once at noon
 - **90 minutes of continuous computer use**: suggests a break (based on keyboard/mouse idle time, so it won't bother you when away)
@@ -220,6 +226,9 @@ It also checks in on you (all configurable or disableable in the menu):
 reminders are held and said together afterwards. Things that go stale, like CPU and network notices, are dropped. The
 pomodoro card still appears on time. To keep reminders on in full screen, turn off Settings → *Pause reminders in full
 screen*. Sharing your screen in a meeting app without going full screen can't be detected, so reminders still appear.
+
+**It won't talk to an empty room**: when the screen is locked, the display is asleep, or the keyboard and mouse have been
+idle for 5 minutes, reminders are held the same way and said together when you're back.
 
 **Daily summary** at 21:30, e.g.
 
@@ -270,8 +279,11 @@ the crown changes on every level-up. Assets live in `Resources/crowns/`; preview
 
 The combo counter resets 2.2 s after you stop. Four sizes: small / medium / large / huge, remembered across launches.
 
-When idle it keeps living: breathing (~0.3 s), blinking every 2–5 s, a random action every 6–13 s (hop, look around,
+When idle it keeps living: breathing (~3 s), blinking every 2–5 s, a random action every 6–13 s (hop, look around,
 stretch, yawn, tilt its head, shiver, doze off), eyes following your cursor, and click-through when the pointer isn't over it.
+
+It's light on battery: it only redraws when something visibly changes (about 2% CPU when idle) and stops drawing
+entirely while the screen is locked or the display is asleep.
 
 ## Launch at login
 
