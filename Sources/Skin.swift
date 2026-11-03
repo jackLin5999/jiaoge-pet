@@ -51,6 +51,8 @@ struct SkinFrame {
 final class PetSkin {
     let id: String
     let name: String
+    /// pet.json 里的简介，聊天时告诉模型自己长什么样
+    let about: String
     let cellSize: CGSize
     private let rows: [[SkinFrame]]
     private let alpha: [UInt8]
@@ -70,7 +72,7 @@ final class PetSkin {
     /// 左右最多伸出去多少，再宽就超出窗口了
     static let artHalfRoom: CGFloat = 206
 
-    init?(id: String, name: String, sheet: CGImage) {
+    init?(id: String, name: String, about: String = "", sheet: CGImage) {
         let w = sheet.width, h = sheet.height
         // 标准是 8 列、每格 192×208；整张图可以等比放大缩小
         guard w >= 64, w % 8 == 0, w <= 4096, h <= 8192 else { return nil }
@@ -136,6 +138,7 @@ final class PetSkin {
 
         self.id = id
         self.name = name
+        self.about = about
         self.cellSize = CGSize(width: fw, height: fh)
         self.rows = rows
         self.alpha = alpha
@@ -227,6 +230,7 @@ final class PetSkin {
         var id: String?
         var displayName: String?
         var name: String?
+        var description: String?
         var spritesheetPath: String?
     }
 
@@ -248,7 +252,10 @@ final class PetSkin {
         let dir = folder.appendingPathComponent(id, isDirectory: true)
         let info = readInfo(dir)
         guard let url = sheetURL(in: dir, info: info), let image = loadImage(url) else { return nil }
-        return PetSkin(id: id, name: displayName(info, fallback: id), sheet: image)
+        // 简介是网上下载来的，会写进给模型的提示里：只取一行、限长
+        let about = (info.description ?? "").components(separatedBy: .newlines).joined(separator: " ")
+            .trimmingCharacters(in: .whitespaces)
+        return PetSkin(id: id, name: displayName(info, fallback: id), about: String(about.prefix(200)), sheet: image)
     }
 
     /// 已经导入的宠物：(id, 名字)
@@ -423,8 +430,11 @@ final class SkinPlayer {
         let idleRow = idleRows[idleKind]
 
         overlay = .none
+        let tickle = TouchTracker.shared.tickleLevel
         if c.isDragging {
             show(runRight ? .runRight : .runLeft, t: t, loop: true)
+        } else if tickle > 0 {
+            show(tickle >= 3 ? .failed : .jumping, t: t, loop: true)     // 被挠得乱蹦，挠太久笑瘫
         } else if t < c.happyEnd && combo && c.reactionLevel == 2 {
             show(.failed, t: t, loop: true)
             overlay = .dizzy
@@ -537,6 +547,52 @@ enum SkinCrown {
     }
 }
 
+// MARK: - 台词
+
+extension PetController {
+    /// 只有香蕉才说得通的几句，换了外观改说这些
+    static let bananaOnlyLines = [
+        "那是我的把儿": "头顶是禁区",
+        "别坐成一根香蕉": "别坐成一块石头",
+    ]
+
+    /// 台词里的「蕉哥」换成当前宠物的名字，香蕉专属的换成别的；用蕉哥原样时原样返回
+    func petLine(_ line: String) -> String {
+        guard let skin = SkinPlayer.shared.skin else { return line }
+        if let swap = Self.bananaOnlyLines[line] { return swap }
+        return Self.insertName(skin.name, into: line)
+    }
+
+    /// 聊天提示的第一句：自己是谁。用蕉哥原样时和原来一字不差
+    func chatPersona() -> String {
+        guard let skin = SkinPlayer.shared.skin else { return "你是一只叫蕉哥的香蕉桌宠，" }
+        let looks = skin.about.isEmpty ? "" : "（外形：\(skin.about)）"
+        return Self.insertName(skin.name, into: "你是一只叫蕉哥的桌宠") + looks + "，"
+    }
+
+    /// 英文名夹在汉字中间时两边留个空格：「Yukina 在此」
+    static func insertName(_ name: String, into text: String) -> String {
+        let parts = text.components(separatedBy: "蕉哥")
+        guard parts.count > 1 else { return text }
+        func isHan(_ c: Character?) -> Bool {
+            guard let v = c?.unicodeScalars.first?.value else { return false }
+            return (0x3400...0x9FFF).contains(v) || (0xF900...0xFAFF).contains(v)
+        }
+        func isLatin(_ c: Character?) -> Bool {
+            guard let c = c else { return false }
+            return c.isASCII && (c.isLetter || c.isNumber)
+        }
+        var out = parts[0]
+        for part in parts.dropFirst() {
+            if isLatin(name.first) && isHan(out.last) { out += " " }
+            out += name
+            if isLatin(name.last) && isHan(part.first) { out += " " }
+            out += part
+        }
+        return out
+    }
+}
+
 // MARK: - 接到原来的代码上
 
 extension PetController {
@@ -576,6 +632,8 @@ extension PetController {
             menu.addItem(item(pet.name, #selector(chooseSkin(_:)), on: pet.id == current?.id, value: pet.id))
         }
         menu.addItem(.separator())
+        menu.addItem(item("显示段位皇冠", #selector(toggleCrown), on: !crownHidden))
+        menu.addItem(.separator())
         menu.addItem(item("导入 Petdex 宠物…", #selector(importSkinAction)))
         menu.addItem(item("去 petdex.dev 挑选", #selector(openPetdex)))
         if let skin = current {
@@ -585,6 +643,16 @@ extension PetController {
         let top = NSMenuItem(title: "外观", action: nil, keyEquivalent: "")
         top.submenu = menu
         return top
+    }
+
+    /// 不喜欢皇冠可以不戴；香蕉和导入的宠物都管用。段位、经验照常算
+    var crownHidden: Bool { UserDefaults.standard.bool(forKey: "crownHidden") }
+
+    @objc func toggleCrown() {
+        UserDefaults.standard.set(!crownHidden, forKey: "crownHidden")
+        view.crownKey = crownHidden ? "" : crownKey
+        lastDrawnPose = nil
+        view.needsDisplay = true
     }
 
     func applySkin(_ skin: PetSkin?) {
@@ -702,7 +770,7 @@ extension PetView {
     /// 皇冠戴在这一帧的头顶，往头发里压一点
     private func drawSkinCrown(_ ctx: CGContext, head: CGPoint, skin: PetSkin) {
         guard let crown = SkinCrown.image(for: crownKey) else { return }
-        let width: CGFloat = 176
+        let width: CGFloat = 176 * CrownAssets.scale(for: crownKey)
         let height = width * CGFloat(crown.height) / CGFloat(crown.width)
         let bottom = head.y + (PetSkin.artFoot - PetSkin.artTop) * 0.07
         ctx.saveGState()

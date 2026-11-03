@@ -14,7 +14,7 @@ if [ -d Resources ]; then
 fi
 
 # 编译。默认只编本机架构（快）；ARCHS=universal 时编 arm64 + x86_64 再合并，供发布用
-SOURCES=(Sources/main.swift Sources/Features.swift Sources/Skin.swift)
+SOURCES=(Sources/main.swift Sources/Features.swift Sources/Skin.swift Sources/Touch.swift)
 FLAGS=(-framework AppKit -framework QuartzCore)
 ARCHS="${ARCHS:-$(uname -m)}"
 if [ "$ARCHS" = "universal" ]; then
@@ -47,8 +47,8 @@ cat > "${APP}/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>JiaoGe</string>
     <key>CFBundleIdentifier</key><string>local.jiaoge.pet</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.2.0</string>
-    <key>CFBundleVersion</key><string>9</string>
+    <key>CFBundleShortVersionString</key><string>1.3.0</string>
+    <key>CFBundleVersion</key><string>10</string>
     <key>LSUIElement</key><true/>
     <key>NSAppTransportSecurity</key>
     <dict>

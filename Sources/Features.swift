@@ -705,6 +705,15 @@ enum ClipStore {
 enum CrownAssets {
     private static var cache: [String: CGImage] = [:]
 
+    /// 段位越高皇冠画得越大一点；高段位周围还带着光芒、月桂，不放大会显小
+    static func scale(for key: String) -> CGFloat {
+        for (tier, scale) in [("iron_", 0.94), ("brass_", 0.96), ("bronze_", 0.98), ("silver_", 1.0),
+                              ("gold_", 1.02), ("platinum_", 1.03), ("emerald_", 1.05), ("diamond_", 1.06)] where key.hasPrefix(tier) {
+            return CGFloat(scale)
+        }
+        return ["master": 1.25, "grandmaster": 1.28, "challenger": 1.32, "god": 1.45][key] ?? 1
+    }
+
     static func image(for key: String) -> CGImage? {
         if let cached = cache[key] { return cached }
         guard !key.isEmpty else { return nil }

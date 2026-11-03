@@ -274,7 +274,7 @@ final class PetView: NSView {
     /// 皇冠：底部压在果柄顶端，跟着宠物一起呼吸、歪头、跳动
     private func drawCrown(_ ctx: CGContext) {
         guard let crown = crownImage else { return }
-        let width: CGFloat = 176
+        let width: CGFloat = 176 * CrownAssets.scale(for: crownKey)
         let height = width * CGFloat(crown.height) / CGFloat(crown.width)
         let bottom: CGFloat = 130
         // 注意：头部中心线在 258 附近（脚底中心才是 246），按 246 摆会偏左
@@ -1014,15 +1014,23 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     static let comboLines = [
         "又戳！", "还来？", "上瘾了是吧", "手速不错",
+        "嗯？叫我？", "在呢在呢", "有事说事", "双击 666", "你在发摩斯电码吗",
+        "戳一下就够啦", "点我能加速编译吗", "我感觉到了",
     ]
     static let comboLines2 = [
         "喂喂喂", "轻点轻点", "我要晕了", "手不酸吗", "再戳要收费了",
+        "你是在打地鼠吗", "我不是按钮！", "节奏感不错嘛", "这是要放连招？", "蕉哥要生气了",
+        "手速有点东西", "工作做完了吗", "冷静，深呼吸", "我不是空格键！",
     ]
     static let comboLines3 = [
         "脑袋要戳穿了", "我叫啦！", "再戳我要罢工", "已戳成筛子",
+        "这手速去打游戏吧", "我都数着呢", "核心温度过高", "电量告急……", "蕉哥申请休假",
+        "检测到异常点击", "这是在给我做心肺复苏吗", "适可而止啊喂",
     ]
     static let comboLines4 = [
         "啊啊啊啊", "救命", "我记住你了", "这算工伤", "已报警（假的）",
+        "系统错误：宠物已崩溃", "正在重启……骗你的", "我要申请工伤赔偿", "你赢了，你赢了",
+        "戳戳狂魔认证", "这笔账记小本本上了", "蕉哥已离线（并没有）", "建议检查一下手指", "今日最强手指就是你",
     ]
 
     var window: PetWindow!
@@ -1529,7 +1537,8 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             setTickRate(2)
             return
         }
-        view.crownKey = crownKey
+        view.crownKey = crownHidden ? "" : crownKey      // 菜单「外观」里可以不戴皇冠
+        touchStep()                 // 鼠标放在身上、来回挠（Touch.swift）
         let hadParticles = !view.particles.isEmpty
         updateParticles(dt)
         let pose = makePose()
@@ -1654,6 +1663,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             p.eyeOffsetY = -max(-2.4, min(2.4, dy / 60)) * ptsToArt
         }
 
+        applyTouchPose(&p)
         return p
     }
 
@@ -1744,15 +1754,19 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func phrase(for n: Int, part: BodyPart) -> String {
-        // 连击到 4 下以后，一半概率变成通用抱怨，一半还是按部位说
-        if n >= 4, Bool.random() {
+        // 连击 2 下起，一半概率变成连击台词（越戳越激动），一半还是按部位说
+        if n >= 2, Bool.random() {
             let pool: [String]
             switch n {
+            case 2...3: pool = Self.comboLines
             case 4...6: pool = Self.comboLines2
             case 7...9: pool = Self.comboLines3
             default: pool = Self.comboLines4
             }
-            return pool.randomElement() ?? "喂！"
+            var pick = pool.randomElement() ?? "喂！"
+            if pick == lastSpokenLine { pick = pool.randomElement() ?? pick }
+            lastSpokenLine = pick
+            return petLine(pick)
         }
         let pool: [String]
         switch part {
@@ -1774,7 +1788,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         lastSpokenLine = pick
-        return pick
+        return petLine(pick)        // 换了外观：台词里的蕉哥换成当前宠物的名字
     }
 
     func clampToScreen() {
@@ -1955,6 +1969,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(folder("好感度 \(levelSummary)", [
             action("\(streakText)认识第 \(daysKnown()) 天", #selector(showAffinity)),
             note("今天被戳了 \(clickToday) 次"),
+            note("今天被挠了 \(tickleToday) 次"),
             note("今天专注 \(pomoCount) 个番茄 · \(pomoMinutes) 分钟"),
             .separator(),
             action("看看今天的小结", #selector(showSummary)),
@@ -2179,7 +2194,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         idleStart = t
         idleKind = 2
         nextIdle = t + 8
-        nudge(Self.stretchLines.randomElement() ?? "起来动动",
+        nudge(petLine(Self.stretchLines.randomElement() ?? "起来动动"),
               subtitle: "坐了 \(stretchMinutes) 分钟了", duration: 8,
               sound: "Ping", holdAs: "stretch")
         nextStretch = clock + Double(stretchMinutes) * 60
@@ -2364,7 +2379,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             bubble.keepAbove = chatInput
         }
         bubble.hideNow()
-        chatInput?.present(above: window, placeholder: chatShot == nil ? "跟蕉哥说点什么…" : "问问这张图…（Esc 取消）")
+        chatInput?.present(above: window, placeholder: chatShot == nil ? petLine("跟蕉哥说点什么…") : "问问这张图…（Esc 取消）")
     }
 
     /// 右键（或菜单）开关对话框
@@ -2404,7 +2419,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         speak("…", duration: 60, maxWidth: 120)
 
-        var system = "你是一只叫蕉哥的香蕉桌宠，性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。"
+        var system = chatPersona() + "性格活泼、说话口语化。用户正坐在电脑前工作，你是陪着他的小助手。回答简短，尽量两三句话讲完，不要用 Markdown。"
         if let shot = shot, shot.image == nil {
             system += "\n\n用户框选了屏幕上的一块区域在问你，下面是从中识别出的文字：\n\(shot.text.prefix(6000))"
         }
@@ -2566,7 +2581,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if resultWindow == nil { resultWindow = ResultWindow() }
         resultShowsChat = true
         bubble.hideNow()
-        resultWindow?.present(text: chatReceived, title: "蕉哥说", above: window, growing: chatInFlight)
+        resultWindow?.present(text: chatReceived, title: petLine("蕉哥说"), above: window, growing: chatInFlight)
         if wasChatting { resultWindow?.onDismiss = { [weak self] in self?.openChat() } }
     }
 
@@ -2690,6 +2705,7 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func summaryText() -> String {
         var parts: [String] = []
         if clickToday > 0 { parts.append("被戳了 \(clickToday) 次") }
+        if tickleToday > 0 { parts.append("被挠了 \(tickleToday) 次") }
         if pomoCount > 0 { parts.append("专注 \(pomoCount) 个番茄共 \(pomoMinutes) 分钟") }
         if clipToday > 0 { parts.append("复制了 \(clipToday) 段内容") }
         if chatToday > 0 { parts.append("跟我聊了 \(chatToday) 次") }
@@ -2889,16 +2905,23 @@ final class PetController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: 好感度
 
-    /// 升到某一级需要的累计经验 = 13 × N × (N-1) / 2
-    /// 也就是每级要 13、26、39、52… 经验
+    /// 从第 N 级升到 N+1 级要的经验。原来是 13 × N；
+    /// 翡翠之前（1～24 级）缩成三分之一，翡翠起（25 级以后）缩成一半，四舍五入取整
+    static func xpStep(_ level: Int) -> Int {
+        let original = 13 * Double(level)
+        return Int((level < 25 ? original / 3 : original / 2).rounded())
+    }
+
+    /// 升到某一级需要的累计经验：4、13、26、43… 翡翠 IV 1300，大师 2784
     static func xpToReach(_ level: Int) -> Int {
-        13 * level * (level - 1) / 2
+        guard level > 1 else { return 0 }
+        return (1..<level).reduce(0) { $0 + xpStep($1) }
     }
 
     /// 到这一级进入大师，之后改按分数算
     static let masterLevel = 33
-    /// 大师以后：每 2 点经验 = 1 分
-    static let xpPerPoint = 2
+    /// 大师以后：每 1 点经验 = 1 分（原来 2 点一分，大师之后要的经验也减半）
+    static let xpPerPoint = 1
     /// 分数对应的段位
     static let grandmasterPoints = 800
     static let challengerPoints = 1200

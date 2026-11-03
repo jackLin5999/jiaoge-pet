@@ -248,11 +248,11 @@ The top level of the menu shows "Affinity Lv.N rank · X/Y". Open it to see:
 - "Poked N times today" (resets at midnight)
 - "N pomodoros today · M minutes"
 
-**XP**: click +1, successful chat +5, completed pomodoro +20 — **no daily caps**; the first interaction of the day gives
+**XP**: click +1, tickle +1, successful chat +5, completed pomodoro +20 — **no daily caps**; the first interaction of the day gives
 +10 and more with a longer streak (capped at +50).
 
 **Ranks** follow League of Legends: Iron / Bronze / Silver / Gold / Platinum / Emerald / Diamond, each with divisions IV–I
-(32 levels total). At Lv.33 you enter **Master**, and from there it's points — **2 XP = 1 point**:
+(32 levels total). At Lv.33 you enter **Master**, and from there it's points — **1 XP = 1 point**:
 
 | Points | Rank |
 |---|---|
@@ -261,11 +261,14 @@ The top level of the menu shows "Affinity Lv.N rank · X/Y". Open it to see:
 | 1200 – 1999 | Challenger |
 | 2000+ | God (hidden tier) |
 
-Each level costs 13, 26, 39… XP. At 150 XP/day: Silver around day 7, Emerald day 26, Master day 46, Grandmaster day 56,
-Challenger day 62 (about two months), God around day 72 — and it keeps counting after that.
+Early levels are quick: before Emerald each level costs 4, 9, 13, 17… XP; from Emerald on, 163–208 per level.
+At 150 XP/day: Silver around day 3, Emerald day 9, Master day 19, Grandmaster day 24, Challenger day 27,
+God around day 32 (about a month) — and it keeps counting after that.
 
 **Crowns**: every rank has its own crown, and **each division looks different** (progressively lit gems from IV to I), so
 the crown changes on every level-up. Assets live in `Resources/crowns/`; preview in `docs/crowns-on-pet.png`.
+
+Don't like the crown? Untick **显示段位皇冠** (Show rank crown) under 🍌 menu → **外观** (Appearance); ranks and XP keep counting.
 
 ## How to play with it
 
@@ -274,6 +277,8 @@ the crown changes on every level-up. Assets live in `Resources/crowns/`; preview
 | Left click | Squash and bounce, wave, hearts, a line; **different lines per body part** (head, eyes, mouth, arms, feet, belly — poking an eye makes it blink) |
 | Rapid clicks | Shows "combo ×N"; at 4 it widens its eyes, at 7 it goes ×× eyes and shakes its head; lines escalate too |
 | Drag | Picks it up (body stretches), it stays where you drop it |
+| Rest the pointer on it | A small perk-up and slightly wider eyes; squints happily if you stay (no speech; passing over doesn't count) |
+| Rub quickly back and forth on it | **Tickle**: it giggles, wiggles and sends hearts, with a new line every second that gets more frantic until it's laughed out; +1 XP each time, trackpad rubbing works too |
 | Right click | Open / close the clipboard panel |
 | **⌥ + right click** | Open the full menu (fallback if the menu bar icon is hidden) |
 | Menu bar 🍌 | Full menu; shows the pomodoro countdown while running |
@@ -311,6 +316,7 @@ How the banana's reactions map onto a pet:
 | Focus session running | Working animation |
 | A pomodoro phase ended, waiting for your choice | Waiting animation |
 | Idle hop / yawn / doze | Matching animations; floating z's when dozing |
+| Tickle | Bounces around; switches to the "failed" row once it's laughed out |
 | Breathing, head tilt, shiver, squash and bounce | Same as before |
 | Eyes follow the cursor | Leans slightly toward the cursor |
 
