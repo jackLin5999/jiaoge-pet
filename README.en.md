@@ -13,6 +13,7 @@ A macOS desktop banana pet that breathes, blinks and waves — and happens to be
 | 💬 **Chat with an LLM** | DeepSeek / Qwen / Kimi / Zhipu / OpenAI / local Ollama. History survives restarts |
 | 🍅 **Pomodoro + break reminders** | Countdown in the menu bar; it speaks up when you sit too long, forget water, or run low on battery |
 | 🏆 **Progression** | Earn XP by clicking, chatting and finishing pomodoros; climb from Iron to Challenger with a crown that changes as you rank up |
+| 🎭 **Appearance** | Swap the banana for an animated pet from [Petdex](https://petdex.dev); every feature and reaction still works |
 
 > **Platform**: macOS 12+ only, **Apple Silicon (arm64)** — the released build won't run on Intel Macs. Not available on Windows/Linux.
 > **Install**: grab the zip from [Releases](https://github.com/jackLin5999/jiaoge-pet/releases) — see [Install & first launch](#install--first-launch) below; developers can just run `./run.sh`.
@@ -284,6 +285,42 @@ stretch, yawn, tilt its head, shiver, doze off), eyes following your cursor, and
 
 It's light on battery: it only redraws when something visibly changes (about 2% CPU when idle) and stops drawing
 entirely while the screen is locked or the display is asleep.
+
+## Appearance: import a Petdex pet
+
+JiaoGe is a banana by default, but you can swap it for an animated pet from [petdex.dev](https://petdex.dev).
+Only the look changes — screenshots, clipboard, chat, pomodoro and everything else work as before.
+
+1. 🍌 menu → **外观** (Appearance) → **去 petdex.dev 挑选** (Browse petdex.dev), pick a pet and download its zip
+2. 🍌 menu → **外观** → **导入 Petdex 宠物…** (Import Petdex pet), choose the zip (an unzipped folder works too)
+3. The new look appears right away
+
+Every pet you've imported is listed under **外观**; click a name to switch. **蕉哥（原版）** brings the banana back,
+and **删除「name」** removes an imported pet. Both Petdex formats are supported (8×9 and the v2 8×11 grid).
+Imported pets are copied to `~/Library/Application Support/JiaoGe/skins/`, so you can delete the download afterwards.
+
+How the banana's reactions map onto a pet:
+
+| Banana | Imported pet |
+|---|---|
+| Click | Waves, hearts |
+| 4 rapid clicks | Jumps with a "!" above its head |
+| 7 rapid clicks | Gets dizzy, stars circling its head |
+| Drag | Runs in the direction you drag |
+| Waiting for the LLM, translating | Thinking animation |
+| Focus session running | Working animation |
+| A pomodoro phase ended, waiting for your choice | Waiting animation |
+| Idle hop / yawn / doze | Matching animations; floating z's when dozing |
+| Breathing, head tilt, shiver, squash and bounce | Same as before |
+| Eyes follow the cursor | Leans slightly toward the cursor |
+
+- Your rank crown still sits on its head
+- A pet's eyes and mouth can't be located, so it has different lines for head, arms, feet and belly, and generic lines for the face
+- The window is sized for a tall, thin banana, so wide pets look a bit smaller — use Settings → Size to enlarge
+- Pets are drawn differently, so some fit these reactions better than others
+
+> **Copyright**: most Petdex pets are user-submitted fan art; rights belong to their creators and the characters' owners.
+> JiaoGe doesn't ship or distribute any pets — it only lets you import one. Keep them for personal use and don't redistribute them.
 
 ## Launch at login
 
